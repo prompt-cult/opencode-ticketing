@@ -17,6 +17,11 @@
 // mirror closes only the flushing session's rows. The plugin stamps
 // observed_session / last_actor from the harness-reported sessionID, so the
 // audit trail is ground truth and never caller input.
+//
+// v0.0.7: novate — the general ownership transfer between real namespaces
+// (adopt's generalisation). Rows parked in dead or superseded rollouts are
+// tidied by naming the row's recorded owner uuid and the target rollout;
+// the mover is stamped in the audit trail, the record rides along intact.
 import { Database } from "bun:sqlite"
 import { mkdirSync, readFileSync, existsSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -293,10 +298,10 @@ export class TaskSidecarStore {
   }
 
   // adopt moves a row OUT of the legacy marker namespace and INTO the calling
-  // rollout. It is the only ownership transfer the store offers, it applies
-  // only to rows still sitting in the marker, and it is a one-way door: once
-  // adopted, the row belongs to that rollout and no marker-naming caller can
-  // touch it again. Any other source namespace is refused, naming the owner.
+  // rollout. It applies only to rows still sitting in the marker, and it is a
+  // one-way door: once adopted, the row belongs to that rollout and no
+  // marker-naming caller can touch it again. Any other source namespace is
+  // refused, naming the owner.
   adopt(id: number, rolloutId: string, actor?: string): TaskSidecarRow | undefined {
     if (!rolloutId) throw new Error("adopt requires 'rollout_id' (your rollout uuid)")
     const current = this.get(id)
@@ -308,6 +313,36 @@ export class TaskSidecarStore {
     this.db.run(
       "UPDATE task_sidecar SET rollout_id = ?, observed_session = COALESCE(observed_session, ?), last_actor = ?, updated_at = ? WHERE id = ?",
       [rolloutId, actor ?? null, actor ?? null, this.now(), id],
+    )
+    return this.get(id)
+  }
+
+  // novate is adopt's general form: it transfers a row between ANY two real
+  // namespaces. The caller names the row's CURRENT owner's uuid (the namespace
+  // key, exactly as every other mutation does) and the target rollout the row
+  // is re-pointed to — this is how rows parked in dead or superseded sessions
+  // are tidied without falsifying provenance: the owner uuid is on the record,
+  // the mover is stamped last_actor, and the todo and fat record ride along
+  // intact. Refused when the named owner does not own the row (the error names
+  // the true owner), when the target is missing or the legacy marker — the
+  // marker is never an identity, nothing moves INTO it — or when the target
+  // equals the current owner.
+  novate(id: number, rolloutId: string, toRolloutId: string, actor?: string): TaskSidecarRow | undefined {
+    if (!rolloutId)
+      throw new Error("novate requires 'rollout_id' (the row's current owning rollout uuid)")
+    if (!toRolloutId) throw new Error("novate requires 'to_rollout_id' (the target rollout uuid)")
+    if (toRolloutId === LEGACY_ROLLOUT)
+      throw new Error(
+        `novate refused: the legacy marker "${LEGACY_ROLLOUT}" is not an identity — novate to a real rollout uuid`,
+      )
+    if (toRolloutId === rolloutId)
+      throw new Error(`novate refused: row ${id} already belongs to rollout "${rolloutId}"`)
+    const current = this.get(id)
+    if (!current) return undefined
+    this.assertOwner(current, rolloutId, "novate")
+    this.db.run(
+      "UPDATE task_sidecar SET rollout_id = ?, observed_session = COALESCE(observed_session, ?), last_actor = ?, updated_at = ? WHERE id = ?",
+      [toRolloutId, actor ?? null, actor ?? null, this.now(), id],
     )
     return this.get(id)
   }

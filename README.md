@@ -95,3 +95,12 @@ the namespace carry the `rollout_id` marker `"0"`, which is a marker and not
 an identity: never pass `"0"` as your own uuid. A legacy row is moved into a
 real namespace only by `adopt id=N rollout_id=<your uuid>` — one way, and
 refused for a row that already has an owner.
+
+v0.0.7: `novate id=N rollout_id=<the row's CURRENT owner>
+to_rollout_id=<the target rollout uuid>` transfers a row between ANY two real
+rollouts — adopt's general form. This is how rows parked in dead or
+superseded sessions are tidied without falsifying provenance: the owner uuid
+is the namespace key and is on the record, the mover is stamped `last_actor`,
+and the todo and fat record ride along intact. Refused for a wrong owner
+(the error names the true one), a missing target, the legacy marker as
+target, or target == owner.

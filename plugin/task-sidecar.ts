@@ -9,6 +9,8 @@
 // v0.0.6: every row is namespaced to the rollout that owns it (rollout_id);
 // update/link_md/purge_older_than are refused outside that namespace, and the
 // todowrite mirror closes only the flushing session's own rows.
+// v0.0.7: novate — ownership transfer between real rollouts (adopt's general
+// form), so rows parked in dead or superseded sessions can be tidied.
 import { tool } from "@opencode-ai/plugin"
 import { TaskSidecarStore, taskSidecarDbPath } from "./task-sidecar-store"
 
@@ -35,6 +37,7 @@ NAMESPACING (mandatory): every row belongs to the rollout that made it.
 - purge_older_than only ever touches your own namespace.
 - Reads (get/list/list_since) are unscoped — auditability means seeing other rollouts — and may filter by rollout_id.
 - Rows created before namespacing carry rollout_id "0". That is a legacy marker, not an identity: NEVER pass "0" as your own uuid. If a legacy row is yours to work, ADOPT it — adopt id=N rollout_id=<your uuid> — which moves it out of the marker into your namespace, one way. Adoption is refused for any row that already has a real owner (the error names them).
+- Rows parked in a dead or superseded session are tidied with NOVATE — novate id=N rollout_id=<the row's CURRENT owner> to_rollout_id=<the target rollout uuid> — the general transfer between real rollouts. The owner uuid is the namespace key and is on the record; the mover is stamped last_actor; the record rides along intact. Refused for a wrong owner (the error names the true one), a missing target, the legacy marker as target, or target == owner.
 
 Rules:
 - Access pattern: INSERT one row, READ one row, LAZY SOFT DELETE. Nothing is ever hard-deleted; superseded work is marked completed/cancelled via update.
@@ -64,6 +67,7 @@ Actions:
 - update: patch todo/status/priority by id; refused unless rollout_id owns the row.
 - link_md: store the task's living document IN the DB (md_content required; md_path optional annotation); refused unless rollout_id owns the row.
 - adopt: move a row out of the legacy "0" marker namespace into yours (id + rollout_id required). One-way; refused for any row with a real owner.
+- novate: transfer a row to another rollout (id + rollout_id [the row's CURRENT owner] + to_rollout_id required). The general form of adopt — how rows parked in dead or superseded sessions are tidied. Refused for a wrong owner (the error names the true one), the legacy marker as target, or target == owner.
 - purge_older_than: LAZY soft delete rows in YOUR namespace created before 'before' (ISO ts). Returns the count.
 - list_since: rows created at/after 'since' (ISO ts), ascending, respecting soft delete; show_deleted includes them.
 The fat record for a task is its living document; write/amend it via link_md, not by stuffing prose into the todo text.`
@@ -92,11 +96,17 @@ export default (async () => ({
       args: {
         action: tool.schema
           .string()
-          .describe("add | list | get | update | link_md | adopt | purge_older_than | list_since"),
+          .describe(
+            "add | list | get | update | link_md | adopt | novate | purge_older_than | list_since",
+          ),
         rollout_id: tool.schema
           .string()
           .optional()
-          .describe("YOUR rollout uuid / session id (REQUIRED on add, update, link_md, purge_older_than; the namespace the row belongs to)"),
+          .describe("YOUR rollout uuid / session id (REQUIRED on add, update, link_md, purge_older_than; on novate/adopt the row's CURRENT owning rollout uuid)"),
+        to_rollout_id: tool.schema
+          .string()
+          .optional()
+          .describe("TARGET rollout uuid (REQUIRED on novate — the session the row is transferred to; never the legacy marker)"),
         id: tool.schema.number().optional().describe("task id (get/update/link_md)"),
         todo: tool.schema.string().optional().describe("one-line task blob (add; optional on update)"),
         status: tool.schema.string().optional().describe("pending | in_progress | completed | cancelled"),
@@ -179,6 +189,24 @@ export default (async () => ({
               if (!row) throw new Error(`no task_sidecar row with id ${args.id}`)
               return JSON.stringify(row, null, 2)
             }
+            case "novate": {
+              if (args.id === undefined) throw new Error("novate requires 'id'")
+              if (!args.rollout_id)
+                throw new Error("novate requires 'rollout_id' (the row's current owning rollout uuid)")
+              if (!args.to_rollout_id)
+                throw new Error("novate requires 'to_rollout_id' (the target rollout uuid)")
+              const row = s.novate(args.id, args.rollout_id, args.to_rollout_id, observed ?? null)
+              if (!row) throw new Error(`no task_sidecar row with id ${args.id}`)
+              return JSON.stringify(
+                {
+                  uuid_mismatch: uuidMismatch(args.rollout_id, observed),
+                  observed_session: observed ?? null,
+                  row,
+                },
+                null,
+                2,
+              )
+            }
             case "purge_older_than": {
               if (!args.before) throw new Error("purge_older_than requires 'before' (ISO ts)")
               if (!args.rollout_id) throw new Error("purge_older_than requires 'rollout_id' (your rollout uuid)")
@@ -192,7 +220,7 @@ export default (async () => ({
             }
             default:
               throw new Error(
-                `unknown action "${args.action}" (use add|list|get|update|link_md|adopt|purge_older_than|list_since)`,
+                `unknown action "${args.action}" (use add|list|get|update|link_md|adopt|novate|purge_older_than|list_since)`,
               )
           }
         } catch (e) {

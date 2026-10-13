@@ -49,7 +49,11 @@ description governs list mechanics and this skill governs process.
    to work is moved into your namespace with `adopt id=N rollout_id=<your
    uuid>` — one way, and refused for any row that already has a real owner
    (the error names them). Set the correct uuid for your rows; leave the rest
-   for the operator.
+   for the operator. Rows parked in a dead or superseded session are tidied
+   with `novate id=N rollout_id=<the row's CURRENT owner> to_rollout_id=<the
+   target rollout uuid>` — the general transfer between real rollouts; the
+   owner uuid is on the record, the mover is stamped `last_actor`, and the
+   record rides along intact.
    Call sequence for each task:
    - `task_sidecar add rollout_id=<your uuid> todo=<one-line blob>` (a record
      passed as `md_content=` IS stored on the row — nothing is silently

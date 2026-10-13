@@ -14,6 +14,7 @@ let home: string
 
 const ROLL_A = "ses_rolloutaaaaaaaaaa"
 const ROLL_B = "ses_rolloutbbbbbbbbbb"
+const ROLL_C = "ses_rolloutcccccccccc"
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "task-sidecar-test-"))
@@ -207,6 +208,77 @@ describe("TaskSidecarStore", () => {
       expect(() => s.adopt(r.id, ROLL_B)).toThrow(new RegExp(`belongs to rollout "${ROLL_A}"`))
       expect(() => s.adopt(r.id, "")).toThrow(/requires 'rollout_id'/)
       expect(s.get(r.id)!.rollout_id).toBe(ROLL_A)
+      s.close()
+    })
+  })
+
+  describe("novating rows between rollouts", () => {
+    test("novate transfers a row to another rollout; the record rides along; the mover is stamped", () => {
+      const s = new TaskSidecarStore()
+      const r = s.add({ todo: "leaked work", rollout_id: ROLL_A, md_content: "# the fat record" })
+      // a tidier session names the row's CURRENT owner and the target; the
+      // mover (ROLL_C) is neither owner nor target and is stamped last_actor
+      const out = s.novate(r.id, ROLL_A, ROLL_B, ROLL_C)!
+      expect(out.rollout_id).toBe(ROLL_B)
+      expect(out.last_actor).toBe(ROLL_C)
+      expect(out.todo).toBe("leaked work")
+      expect(out.md_content).toBe("# the fat record")
+      // the new owner mutates; the old owner is now refused, naming the new one
+      expect(s.linkMd(r.id, "# amended by the new owner", ROLL_B)!.md_content).toBe(
+        "# amended by the new owner",
+      )
+      expect(() => s.update(r.id, { rollout_id: ROLL_A, status: "completed" })).toThrow(
+        new RegExp(`update refused: row ${r.id} belongs to rollout "${ROLL_B}"`),
+      )
+      s.close()
+    })
+
+    test("the transfer is real: the old owner's flush can no longer close the row", () => {
+      const s = new TaskSidecarStore()
+      const r = s.add({ todo: "transferred", rollout_id: ROLL_A })
+      s.novate(r.id, ROLL_A, ROLL_B, ROLL_C)
+      expect(s.syncStatuses([{ content: `${r.id}: transferred`, status: "completed" }], ROLL_A)).toEqual([])
+      expect(s.get(r.id)!.status).toBe("pending")
+      // and the new owner's flush DOES close it
+      expect(s.syncStatuses([{ content: `${r.id}: transferred`, status: "completed" }], ROLL_B)).toEqual([r.id])
+      s.close()
+    })
+
+    test("novate from the legacy marker is the general form of adopt", () => {
+      const s = new TaskSidecarStore()
+      s.db.run(
+        "INSERT INTO task_sidecar (created_at, updated_at, todo, status, md_content) VALUES ('2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z','marker row','pending','# old record')",
+      )
+      const legacy = s.list({ rollout_id: LEGACY_ROLLOUT })[0]
+      const out = s.novate(legacy.id, LEGACY_ROLLOUT, ROLL_A, ROLL_B)!
+      expect(out.rollout_id).toBe(ROLL_A)
+      expect(out.md_content).toBe("# old record")
+      expect(s.linkMd(legacy.id, "# amended by the new owner", ROLL_A)).toBeDefined()
+      s.close()
+    })
+
+    test("novate is refused for a wrong owner, the marker target, a same-owner target, and missing args", () => {
+      const s = new TaskSidecarStore()
+      const r = s.add({ todo: "owned", rollout_id: ROLL_A })
+      expect(() => s.novate(r.id, ROLL_B, ROLL_A)).toThrow(
+        new RegExp(`novate refused: row ${r.id} belongs to rollout "${ROLL_A}", not "${ROLL_B}"`),
+      )
+      expect(() => s.novate(r.id, ROLL_A, LEGACY_ROLLOUT)).toThrow(/not an identity/)
+      expect(() => s.novate(r.id, ROLL_A, ROLL_A)).toThrow(/already belongs to rollout/)
+      expect(() => s.novate(r.id, "", ROLL_B)).toThrow(/requires 'rollout_id'/)
+      expect(() => s.novate(r.id, ROLL_A, "")).toThrow(/requires 'to_rollout_id'/)
+      // refused means untouched
+      expect(s.get(r.id)!.rollout_id).toBe(ROLL_A)
+      s.close()
+    })
+
+    test("novate of a soft-deleted row is undefined, never a resurrection", () => {
+      const s = new TaskSidecarStore()
+      const r = s.add({ todo: "gone", rollout_id: ROLL_A })
+      s.db.run("UPDATE task_sidecar SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = ?", [r.id])
+      s.purgeOlderThan("2026-01-01T00:00:00.000Z", ROLL_A)
+      expect(s.novate(r.id, ROLL_A, ROLL_B, ROLL_C)).toBeUndefined()
+      expect(s.get(r.id, { include_deleted: true })!.rollout_id).toBe(ROLL_A)
       s.close()
     })
   })
