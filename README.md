@@ -7,22 +7,31 @@ it, store the plan in the ticket, then delegate.
 - `skills/opencode-ticketing/SKILL.md` — the ticketing workflow: ticket →
   numbered todo → plan file → delegate by ticket number → todos close tickets
   automatically.
-- `plugin/ticket.ts` + `plugin/ticket-store.ts` — the `ticket` tool: a shared
-  SQLite **ticket database** + global ticket-number sequencer. Tickets survive
-  sessions, restarts, compaction and repo cleanups; they can be amended
-  (`link_md`), transferred between sessions (`novate`), and searched from any
-  repo. Nothing is hard-deleted.
-- `plugin/todo-protocol.ts` — rewrites the `todowrite` tool description to the
-  flush/deque protocol (bottom-default appends, footer items for discovered
-  constraints, parallel `in_progress` for parallel subagents) and strips the
-  shipped serial-todo prompt bullets.
+- `v2.2/` — the current plugins for **opencode 2.2** (the Promise plugin API:
+  default export `{ id, setup }`, hooks registered via `ctx.tool.transform` /
+  `ctx.tool.hook` / `ctx.session.hook`):
+  - `ticket.ts` — the `ticket` tool: a shared SQLite **ticket database** +
+    global ticket-number sequencer. Tickets survive sessions, restarts,
+    compaction and repo cleanups; they can be amended (`link_md`), transferred
+    between sessions (`novate`), and searched from any repo. Nothing is
+    hard-deleted.
+  - `todo-protocol.ts` — rewrites the `todowrite` description to the
+    flush/deque protocol (bottom-default appends, footer items for discovered
+    constraints, parallel `in_progress` for parallel subagents) and strips
+    the shipped serial-todo prompt bullets.
+  - `lib/ticket-store.ts` — the TicketStore library (bun:sqlite only; loaded
+    by `ticket.ts`, never registered as a plugin itself).
+- `v1.19/` — the legacy 1.x-era plugin (kept for history; 2.2 replaces it).
+- `.opencode/` — a copy of the `v2.2` plugins that opencode auto-loads when
+  working in this repo, for start/stop debugging: `plugin/ticket.ts`,
+  `plugin/todo-protocol.ts`, `lib/ticket-store.ts`.
 
 ## The loop
 
 1. `ticket add rollout_id=<your session uuid> todo="one-line summary"` →
    returns the permanent ticket number **N**.
 2. `todowrite` — append item `N: <descriptive name>` at the END of the list
-   (front only when the user says "do it next" or gives an order).
+   (front only when the user says do it next or gives an order).
 3. Write the detailed plan to `.tmp/tickets/NNN_slug.md` in the repo's
    gitignored scratch (zero-padded ticket number + short slug).
 4. `ticket link_md id=N rollout_id=<your uuid> md_content=<file contents>` —
@@ -49,16 +58,24 @@ ln -s "$(pwd)/opencode-ticketing/skills/opencode-ticketing" ~/.config/opencode/s
 
 (or add the repo to `skills.paths` in `opencode.json(c)`).
 
-Plugin — copy them into the plugin folder and list them in the global config:
+Plugin (opencode 2.2) — copy the plugins and their lib into the project's
+`.opencode/` folder (opencode auto-loads every `.ts` under
+`.opencode/plugin/`; the lib lives one level up so it is not mistaken for a
+plugin):
 
 ```sh
-cp opencode-ticketing/plugin/*.ts ~/.config/opencode/plugin/
+mkdir -p .opencode/plugin .opencode/lib
+cp v2.2/ticket.ts v2.2/todo-protocol.ts .opencode/plugin/
+cp v2.2/lib/ticket-store.ts .opencode/lib/
 ```
+
+Or list them in the global config instead:
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
-  "plugin": ["./plugin/todo-protocol.ts", "./plugin/ticket.ts"],
+  "plugin": ["/abs/path/to/opencode-ticketing/v2.2/ticket.ts",
+            "/abs/path/to/opencode-ticketing/v2.2/todo-protocol.ts"],
   "permission": {
     "bash": { "*ticket-store*": "allow" }
   }
@@ -72,6 +89,11 @@ sentence of the `todowrite` description is "Maintain the session todo list."
 
 ## Tests
 
+The store's bun:test suite lives with the 1.x-era plugin:
+
 ```sh
-bun test plugin/
+bun test v1.19/
 ```
+
+The `v2.2` plugins are exercised by loading them in opencode itself
+(`opencode run` in this repo auto-loads the `.opencode/` copies).

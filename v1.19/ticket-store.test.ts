@@ -6,7 +6,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, rmSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { TicketStore, ticketDbPath } from "./ticket-store"
+import { TicketStore, ticketDbPath } from "../v2.2/lib/ticket-store"
 import { Database } from "bun:sqlite"
 
 // raw reaches the store's private database handle for test setup only

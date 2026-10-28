@@ -70,16 +70,29 @@ const STRIPPED: [string | RegExp, string][] = [
   ["- Work through the whole todo list to completion in one turn, marking items done as you go.", ""],
 ]
 
-export default (async () => ({
-  "tool.definition": async (input: { toolID: string }, output: { description: string }) => {
-    if (input.toolID !== "todowrite") return
-    output.description = TODOWRITE_DESCRIPTION
+// 2.2 Promise plugin API: default export { id, setup }; the session context
+// event carries mutable `system` parts and the live tool descriptions, so the
+// "tool.definition" and "experimental.chat.system.transform" hooks from 1.x
+// collapse into one session.hook("context") registration. No imports: the
+// file loads standalone.
+export default {
+  id: "todo-protocol",
+  setup: async (ctx) => {
+    await ctx.session.hook("context", async (event) => {
+      if (event.tools?.todowrite) event.tools.todowrite.description = TODOWRITE_DESCRIPTION
+      for (let i = 0; i < event.system.length; i++) {
+        let s: any = event.system[i]
+        if (typeof s === "string") {
+          event.system[i] = rewrite(s)
+          continue
+        }
+        if (typeof s?.text === "string") s.text = rewrite(s.text)
+      }
+    })
   },
-  "experimental.chat.system.transform": async (_input: unknown, output: { system: string[] }) => {
-    for (let i = 0; i < output.system.length; i++) {
-      let s = output.system[i]
-      for (const [needle, replacement] of STRIPPED) s = s.replaceAll(needle, replacement)
-      output.system[i] = s.replace(/\n{3,}/g, "\n\n")
-    }
-  },
-}))
+}
+
+function rewrite(s: string): string {
+  for (const [needle, replacement] of STRIPPED) s = s.replaceAll(needle, replacement)
+  return s.replace(/\n{3,}/g, "\n\n")
+}
