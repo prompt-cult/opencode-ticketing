@@ -25,7 +25,10 @@ Tickets are the durable record. The todo list is ephemeral ordering.
    `ticket get id=N`, reads `md_content` as its full instructions, works the
    plan, and amends the ticket as it goes (passing the OWNER's rollout uuid).
    The orchestrator reviews the diff, runs the tests, commits.
-6. Closing the todo item closes ticket N automatically. Nothing to do.
+6. Closing the todo item closes ticket N automatically. Nothing to do —
+   but the mirror only runs where a `todowrite` tool exists. In a session
+   without one, close by hand: `ticket update id=N rollout_id=<your uuid>
+   status=completed`. (Verified live 2026-10-29, ticket 46.)
 
 ## Why tickets
 
@@ -44,6 +47,10 @@ value; subagent delegation is secondary.
   database is always the record.
 - Never read the sqlite file directly — use the `ticket` tool.
 - Tickets are never hard-deleted (soft delete only).
+- `link_md` refuses a bare `md_path`: it requires `md_content` too. The
+  `md_path` is an annotation; the DB copy is the record.
+- Reads (`list`, `get`, `list_since`) are unscoped — any session can read
+  every ticket; only mutations are namespaced to the owner's uuid.
 
 ## Setup (once per environment, with the user's permission)
 
