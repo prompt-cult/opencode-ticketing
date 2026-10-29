@@ -22,9 +22,11 @@ it, store the plan in the ticket, then delegate.
   - `lib/ticket-store.ts` — the TicketStore library (bun:sqlite only; loaded
     by `ticket.ts`, never registered as a plugin itself).
 - `v1.19/` — the legacy 1.x-era plugin (kept for history; 2.2 replaces it).
-- `.opencode/` — a copy of the `v2.2` plugins that opencode auto-loads when
-  working in this repo, for start/stop debugging: `plugin/ticket.ts`,
-  `plugin/todo-protocol.ts`, `lib/ticket-store.ts`.
+
+Install centrally (`~/.config/opencode/plugin/` + `~/.config/opencode/lib/`)
+and opencode auto-discovers the plugins in every session — see Install below.
+Do not keep copies in a repo's `.opencode/plugin/` as well: opencode loads
+both, and the supervisor disables same-id duplicates.
 
 ## The loop
 
@@ -58,28 +60,18 @@ ln -s "$(pwd)/opencode-ticketing/skills/opencode-ticketing" ~/.config/opencode/s
 
 (or add the repo to `skills.paths` in `opencode.json(c)`).
 
-Plugin (opencode 2.2) — copy the plugins and their lib into the project's
-`.opencode/` folder (opencode auto-loads every `.ts` under
-`.opencode/plugin/`; the lib lives one level up so it is not mistaken for a
-plugin):
+Plugin (opencode 2.2) — install centrally. opencode auto-discovers every
+`.ts` under `~/.config/opencode/plugin/`; the lib lives one level up so it is
+not mistaken for a plugin:
 
 ```sh
-mkdir -p .opencode/plugin .opencode/lib
-cp v2.2/ticket.ts v2.2/todo-protocol.ts .opencode/plugin/
-cp v2.2/lib/ticket-store.ts .opencode/lib/
+mkdir -p ~/.config/opencode/plugin ~/.config/opencode/lib
+cp v2.2/ticket.ts v2.2/todo-protocol.ts ~/.config/opencode/plugin/
+cp v2.2/lib/ticket-store.ts ~/.config/opencode/lib/
 ```
 
-Or list them in the global config instead:
-
-```jsonc
-// ~/.config/opencode/opencode.jsonc
-{
-  "plugin": ["/abs/path/to/opencode-ticketing/v2.2/ticket.ts",
-            "/abs/path/to/opencode-ticketing/v2.2/todo-protocol.ts"],
-  "permission": {
-    "bash": { "*ticket-store*": "allow" }
-  }
-}
+No `plugin` entries in `opencode.jsonc` are needed (and file entries only
+log a "configured plugin path must be a directory" warning).
 ```
 
 Restart opencode — plugins and skills load once at startup.
