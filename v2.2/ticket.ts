@@ -97,7 +97,8 @@ const TICKET_INPUT = {
   required: ["action"],
 }
 
-const TICKET_OUTPUT = { type: "object" }
+// No declared `output`: the registry validates a declared output at runtime,
+// and this tool returns free-form JSON strings as content only.
 
 async function execute(args: any, context: any): Promise<{ content: string }> {
   const s = getStore()
@@ -217,7 +218,6 @@ export default {
         options: { codemode: false },
         description: TICKET_DESCRIPTION,
         input: TICKET_INPUT,
-        output: TICKET_OUTPUT,
         execute: (args, context) => execute(args, context),
       })
     })
