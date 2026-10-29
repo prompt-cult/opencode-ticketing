@@ -88,4 +88,4 @@ bun test v1.19/
 ```
 
 The `v2.2` plugins are exercised by loading them in opencode itself
-(`opencode run` in this repo auto-loads the `.opencode/` copies).
+(`opencode run` picks up the central install from any directory).
