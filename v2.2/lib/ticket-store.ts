@@ -32,7 +32,17 @@ export interface TicketRow {
   last_actor: string | null
   md_path: string | null
   md_content: string | null
+  parent_id: number | null
   deleted: number
+}
+
+export interface TicketComment {
+  id: number
+  ticket_id: number
+  created_at: string
+  content: string
+  author_rollout_id: string | null
+  author_session_id: string | null
 }
 
 export interface AddInput {
@@ -43,6 +53,7 @@ export interface AddInput {
   session_id?: string | null
   md_content?: string | null
   observed_session?: string | null
+  parent_id?: number | null
 }
 
 export interface UpdateInput {
@@ -52,6 +63,7 @@ export interface UpdateInput {
   priority?: string
   session_id?: string | null
   last_actor?: string | null
+  parent_id?: number | null
 }
 
 export interface ListFilter {
@@ -60,7 +72,7 @@ export interface ListFilter {
   show_deleted?: boolean
 }
 
-const STATUSES = new Set(["pending", "in_progress", "completed", "cancelled"])
+const STATUSES = new Set(["pending", "in_progress", "completed", "cancelled", "superseded"])
 const PRIORITIES = new Set(["high", "medium", "low"])
 
 // The ticket database is the shared registry of tickets, so it lives in the
@@ -92,9 +104,21 @@ export class TicketStore {
         last_actor TEXT,
         md_path TEXT,
         md_content TEXT,
+        parent_id INTEGER,
         deleted INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS ticket_comment (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        content TEXT NOT NULL,
+        author_rollout_id TEXT,
+        author_session_id TEXT,
+        FOREIGN KEY (ticket_id) REFERENCES ticket(id)
+      );
     `)
+    // Migration: add parent_id to existing ticket tables.
+    try { this.db.exec("ALTER TABLE ticket ADD COLUMN parent_id INTEGER;") } catch { /* already exists */ }
   }
 
   private now(): string {
@@ -131,10 +155,16 @@ export class TicketStore {
     this.assertStatus(input.status)
     this.assertPriority(input.priority)
     if (!input.rollout_id) throw new Error("add requires 'rollout_id' (your rollout uuid)")
+    if (input.parent_id !== undefined && input.parent_id !== null) {
+      const parent = this.get(input.parent_id)
+      if (!parent) throw new Error(`add: parent_id ${input.parent_id} does not reference an existing ticket`)
+    }
+    if (input.status === "superseded" && (input.parent_id === undefined || input.parent_id === null))
+      throw new Error("add: status 'superseded' requires parent_id pointing to the replacement ticket")
     const ts = this.now()
     this.db.run(
-      `INSERT INTO ticket (created_at, updated_at, todo, status, priority, session_id, rollout_id, observed_session, last_actor, md_path, md_content, deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0)`,
+      `INSERT INTO ticket (created_at, updated_at, todo, status, priority, session_id, rollout_id, observed_session, last_actor, md_path, md_content, parent_id, deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0)`,
       [
         ts,
         ts,
@@ -146,6 +176,7 @@ export class TicketStore {
         input.observed_session ?? null,
         input.observed_session ?? null,
         input.md_content ?? null,
+        input.parent_id ?? null,
       ],
     )
     return this.get(Number((this.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id))!
@@ -188,16 +219,26 @@ export class TicketStore {
     const current = this.get(id)
     if (!current) return undefined
     this.assertOwner(current, input.rollout_id, "update")
+    if (input.parent_id !== undefined && input.parent_id !== null) {
+      const parent = this.get(input.parent_id)
+      if (!parent) throw new Error(`update: parent_id ${input.parent_id} does not reference an existing ticket`)
+      if (input.parent_id === id) throw new Error(`update: ticket ${id} cannot be its own parent`)
+    }
+    const newStatus = input.status ?? current.status
+    const newParent = input.parent_id !== undefined ? input.parent_id : current.parent_id
+    if (newStatus === "superseded" && (newParent === undefined || newParent === null))
+      throw new Error("update: status 'superseded' requires parent_id pointing to the replacement ticket")
     this.db.run(
       `UPDATE ticket
-          SET todo = ?, status = ?, priority = ?, session_id = ?, last_actor = ?, updated_at = ?
+          SET todo = ?, status = ?, priority = ?, session_id = ?, last_actor = ?, parent_id = ?, updated_at = ?
         WHERE id = ? AND deleted = 0`,
       [
         input.todo ?? current.todo,
-        input.status ?? current.status,
+        newStatus,
         input.priority ?? current.priority,
         input.session_id !== undefined ? input.session_id : current.session_id,
         input.last_actor ?? current.last_actor,
+        newParent,
         this.now(),
         id,
       ],
@@ -289,6 +330,37 @@ export class TicketStore {
       changed.push(row.id)
     }
     return changed
+  }
+
+  // appendComment adds an immutable comment to a ticket. Comments are the
+  // channel for gate results, follow-on work, blocked/andon reports, and
+  // status updates that are not state changes. No owner gate: comments are
+  // reports, not mutations — any session may append. The author is stamped
+  // from the caller's rollout/session for provenance.
+  appendComment(
+    ticketId: number,
+    content: string,
+    authorRolloutId?: string | null,
+    authorSessionId?: string | null,
+  ): TicketComment {
+    const row = this.get(ticketId)
+    if (!row) throw new Error(`appendComment: no ticket with number ${ticketId}`)
+    const ts = this.now()
+    this.db.run(
+      `INSERT INTO ticket_comment (ticket_id, created_at, content, author_rollout_id, author_session_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      [ticketId, ts, content, authorRolloutId ?? null, authorSessionId ?? null],
+    )
+    return this.db.query("SELECT * FROM ticket_comment WHERE id = ?").get(
+      Number((this.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id),
+    ) as TicketComment
+  }
+
+  // getComments returns all comments for a ticket, oldest first.
+  getComments(ticketId: number): TicketComment[] {
+    return this.db
+      .query("SELECT * FROM ticket_comment WHERE ticket_id = ? ORDER BY created_at, id")
+      .all(ticketId) as TicketComment[]
   }
 
   close() {

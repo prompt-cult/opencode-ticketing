@@ -57,14 +57,33 @@ NUMBER, never a path — it runs ticket get id=N and reads md_content as its
 full instructions; the record must be self-contained before launch.
 
 Recovery (crashed session): ticket list, rebuild the todo list from the
-pending/in_progress tickets.`
+pending/in_progress tickets.
+
+Actions: add | list | get | update | link_md | novate | purge_older_than |
+list_since | append_comment | get_delegee_rules.
+
+- append_comment id=N rollout_id=<your uuid> content="..." adds an immutable
+  comment to a ticket. Comments are the channel for gate results, follow-on
+  work, blocked/andon reports, and status updates that are not state changes.
+  Any session may append; the body (md_content) stays as the original spec.
+- get_delegee_rules returns the standard banner of rules every subagent must
+  obey. Subagents call it first and obey the returned rules.
+- md_content is mostly immutable (write-once). The only legitimate reason to
+  change the body is a fundamental re-scope, which is rare. Otherwise create
+  a NEW ticket with parent_id pointing to the old one and mark the old one
+  superseded.
+- superseded is a terminal closed status (distinct from cancelled which means
+  abandoned/will-not-fix). A superseded ticket's parent_id points to its
+  replacement.
+- parent_id links a ticket to its parent (superseded tickets and follow-on
+  tickets).`
 
 const TICKET_INPUT = {
   type: "object",
   properties: {
     action: {
       type: "string",
-      description: "add | list | get | update | link_md | novate | purge_older_than | list_since",
+      description: "add | list | get | update | link_md | novate | purge_older_than | list_since | append_comment | get_delegee_rules",
     },
     rollout_id: {
       type: "string",
@@ -87,6 +106,8 @@ const TICKET_INPUT = {
       type: "string",
       description: "living doc content, stored IN the DB (persisted by add and link_md)",
     },
+    parent_id: { type: "number", description: "parent ticket id (superseded tickets and follow-on tickets)" },
+    content: { type: "string", description: "comment text (append_comment)" },
     before: {
       type: "string",
       description: "ISO ts — purge_older_than soft-deletes YOUR tickets created before this",
@@ -115,6 +136,7 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
           priority: args.priority,
           md_content: args.md_content ?? null,
           observed_session: observed ?? null,
+          parent_id: args.parent_id,
         })
         return {
           content: JSON.stringify(
@@ -146,7 +168,13 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
         if (args.id === undefined) throw new Error("get requires 'id'")
         const row = s.get(args.id, { include_deleted: args.show_deleted })
         if (!row) throw new Error(`no ticket with number ${args.id}`)
-        return { content: JSON.stringify(row, null, 2) }
+        const comments = s.getComments(args.id)
+        const rendered = comments.length
+          ? `${JSON.stringify(row, null, 2)}\n\n--- comments (chronological) ---\n${comments
+              .map((c) => `[${c.created_at}] ${c.content}`)
+              .join("\n")}`
+          : JSON.stringify(row, null, 2)
+        return { content: rendered }
       }
       case "update": {
         if (args.id === undefined) throw new Error("update requires 'id'")
@@ -157,6 +185,7 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
           status: args.status,
           priority: args.priority,
           last_actor: observed ?? null,
+          parent_id: args.parent_id,
         })
         if (!row) throw new Error(`no ticket with number ${args.id}`)
         return { content: JSON.stringify(row, null, 2) }
@@ -198,6 +227,29 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
         if (!args.since) throw new Error("list_since requires 'since' (ISO ts)")
         const rows = s.listSince(args.since, { show_deleted: args.show_deleted })
         return { content: JSON.stringify(rows, null, 2) }
+      }
+      case "append_comment": {
+        if (args.id === undefined) throw new Error("append_comment requires 'id'")
+        if (!args.content) throw new Error("append_comment requires 'content'")
+        if (!args.rollout_id) throw new Error("append_comment requires 'rollout_id' (your rollout uuid)")
+        const c = s.appendComment(args.id, args.content, args.rollout_id, observed ?? null)
+        return { content: JSON.stringify(c, null, 2) }
+      }
+      case "get_delegee_rules": {
+        return {
+          content: `Subagent (delegee) rules — obey all of them:
+- Read the repo's AGENTS.md if it exists and obey it.
+- No commit, no push, no PR creation, no watch/poll of CI.
+- Only run tests and \`git add\`.
+- No rm/reset/stash — mv to .tmp; no /tmp.
+- No issue numbers in committed files, messages, docs, comments.
+- EN/CN doc parity for any doc touched.
+- Tee all command output to .tmp/clobber_me_NN.txt (incrementing).
+- bare-env macOS proof: env -u HOMEBREW_PREFIX -u PKG_CONFIG_PATH.
+- AppVeyor checks are orphaned (ignore).
+- When extra work is discovered, record it in the ticket (append a comment) — do not chase it. Pass the orchestrator's rollout uuid.
+- The first thing you do is call get_delegee_rules and obey the returned rules.`,
+        }
       }
       default:
         throw new Error(

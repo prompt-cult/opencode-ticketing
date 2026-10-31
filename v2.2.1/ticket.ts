@@ -38,7 +38,17 @@ export interface TicketRow {
   last_actor: string | null
   md_path: string | null
   md_content: string | null
+  parent_id: number | null
   deleted: number
+}
+
+export interface TicketComment {
+  id: number
+  ticket_id: number
+  created_at: string
+  content: string
+  author_rollout_id: string | null
+  author_session_id: string | null
 }
 
 export interface AddInput {
@@ -49,6 +59,7 @@ export interface AddInput {
   session_id?: string | null
   md_content?: string | null
   observed_session?: string | null
+  parent_id?: number | null
 }
 
 export interface UpdateInput {
@@ -58,6 +69,7 @@ export interface UpdateInput {
   priority?: string
   session_id?: string | null
   last_actor?: string | null
+  parent_id?: number | null
 }
 
 export interface ListFilter {
@@ -66,7 +78,7 @@ export interface ListFilter {
   show_deleted?: boolean
 }
 
-const STATUSES = new Set(["pending", "in_progress", "completed", "cancelled"])
+const STATUSES = new Set(["pending", "in_progress", "completed", "cancelled", "superseded"])
 const PRIORITIES = new Set(["high", "medium", "low"])
 
 // The ticket database is the shared registry of tickets, so it lives in the
@@ -98,9 +110,21 @@ export class TicketStore {
         last_actor TEXT,
         md_path TEXT,
         md_content TEXT,
+        parent_id INTEGER,
         deleted INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS ticket_comment (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        content TEXT NOT NULL,
+        author_rollout_id TEXT,
+        author_session_id TEXT,
+        FOREIGN KEY (ticket_id) REFERENCES ticket(id)
+      );
     `)
+    // Migration: add parent_id to existing ticket tables.
+    try { this.db.exec("ALTER TABLE ticket ADD COLUMN parent_id INTEGER;") } catch { /* already exists */ }
   }
 
   private now(): string {
@@ -137,10 +161,16 @@ export class TicketStore {
     this.assertStatus(input.status)
     this.assertPriority(input.priority)
     if (!input.rollout_id) throw new Error("add requires 'rollout_id' (your rollout uuid)")
+    if (input.parent_id !== undefined && input.parent_id !== null) {
+      const parent = this.get(input.parent_id)
+      if (!parent) throw new Error(`add: parent_id ${input.parent_id} does not reference an existing ticket`)
+    }
+    if (input.status === "superseded" && (input.parent_id === undefined || input.parent_id === null))
+      throw new Error("add: status 'superseded' requires parent_id pointing to the replacement ticket")
     const ts = this.now()
     this.db.run(
-      `INSERT INTO ticket (created_at, updated_at, todo, status, priority, session_id, rollout_id, observed_session, last_actor, md_path, md_content, deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0)`,
+      `INSERT INTO ticket (created_at, updated_at, todo, status, priority, session_id, rollout_id, observed_session, last_actor, md_path, md_content, parent_id, deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0)`,
       [
         ts,
         ts,
@@ -152,6 +182,7 @@ export class TicketStore {
         input.observed_session ?? null,
         input.observed_session ?? null,
         input.md_content ?? null,
+        input.parent_id ?? null,
       ],
     )
     return this.get(Number((this.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id))!
@@ -194,16 +225,26 @@ export class TicketStore {
     const current = this.get(id)
     if (!current) return undefined
     this.assertOwner(current, input.rollout_id, "update")
+    if (input.parent_id !== undefined && input.parent_id !== null) {
+      const parent = this.get(input.parent_id)
+      if (!parent) throw new Error(`update: parent_id ${input.parent_id} does not reference an existing ticket`)
+      if (input.parent_id === id) throw new Error(`update: ticket ${id} cannot be its own parent`)
+    }
+    const newStatus = input.status ?? current.status
+    const newParent = input.parent_id !== undefined ? input.parent_id : current.parent_id
+    if (newStatus === "superseded" && (newParent === undefined || newParent === null))
+      throw new Error("update: status 'superseded' requires parent_id pointing to the replacement ticket")
     this.db.run(
       `UPDATE ticket
-          SET todo = ?, status = ?, priority = ?, session_id = ?, last_actor = ?, updated_at = ?
+          SET todo = ?, status = ?, priority = ?, session_id = ?, last_actor = ?, parent_id = ?, updated_at = ?
         WHERE id = ? AND deleted = 0`,
       [
         input.todo ?? current.todo,
-        input.status ?? current.status,
+        newStatus,
         input.priority ?? current.priority,
         input.session_id !== undefined ? input.session_id : current.session_id,
         input.last_actor ?? current.last_actor,
+        newParent,
         this.now(),
         id,
       ],
@@ -297,6 +338,37 @@ export class TicketStore {
     return changed
   }
 
+  // appendComment adds an immutable comment to a ticket. Comments are the
+  // channel for gate results, follow-on work, blocked/andon reports, and
+  // status updates that are not state changes. No owner gate: comments are
+  // reports, not mutations — any session may append. The author is stamped
+  // from the caller's rollout/session for provenance.
+  appendComment(
+    ticketId: number,
+    content: string,
+    authorRolloutId?: string | null,
+    authorSessionId?: string | null,
+  ): TicketComment {
+    const row = this.get(ticketId)
+    if (!row) throw new Error(`appendComment: no ticket with number ${ticketId}`)
+    const ts = this.now()
+    this.db.run(
+      `INSERT INTO ticket_comment (ticket_id, created_at, content, author_rollout_id, author_session_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      [ticketId, ts, content, authorRolloutId ?? null, authorSessionId ?? null],
+    )
+    return this.db.query("SELECT * FROM ticket_comment WHERE id = ?").get(
+      Number((this.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id),
+    ) as TicketComment
+  }
+
+  // getComments returns all comments for a ticket, oldest first.
+  getComments(ticketId: number): TicketComment[] {
+    return this.db
+      .query("SELECT * FROM ticket_comment WHERE ticket_id = ? ORDER BY created_at, id")
+      .all(ticketId) as TicketComment[]
+  }
+
   close() {
     this.db.close()
   }
@@ -351,14 +423,33 @@ NUMBER, never a path — it runs ticket get id=N and reads md_content as its
 full instructions; the record must be self-contained before launch.
 
 Recovery (crashed session): ticket list, rebuild the todo list from the
-pending/in_progress tickets.`
+pending/in_progress tickets.
+
+Actions: add | list | get | update | link_md | novate | purge_older_than |
+list_since | append_comment | get_delegee_rules.
+
+- append_comment id=N rollout_id=<your uuid> content="..." adds an immutable
+  comment to a ticket. Comments are the channel for gate results, follow-on
+  work, blocked/andon reports, and status updates that are not state changes.
+  Any session may append; the body (md_content) stays as the original spec.
+- get_delegee_rules returns the standard banner of rules every subagent must
+  obey. Subagents call it first and obey the returned rules.
+- md_content is mostly immutable (write-once). The only legitimate reason to
+  change the body is a fundamental re-scope, which is rare. Otherwise create
+  a NEW ticket with parent_id pointing to the old one and mark the old one
+  superseded.
+- superseded is a terminal closed status (distinct from cancelled which means
+  abandoned/will-not-fix). A superseded ticket's parent_id points to its
+  replacement.
+- parent_id links a ticket to its parent (superseded tickets and follow-on
+  tickets).`
 
 const TICKET_INPUT = {
   type: "object",
   properties: {
     action: {
       type: "string",
-      description: "add | list | get | update | link_md | novate | purge_older_than | list_since",
+      description: "add | list | get | update | link_md | novate | purge_older_than | list_since | append_comment | get_delegee_rules",
     },
     rollout_id: {
       type: "string",
@@ -381,6 +472,8 @@ const TICKET_INPUT = {
       type: "string",
       description: "living doc content, stored IN the DB (persisted by add and link_md)",
     },
+    parent_id: { type: "number", description: "parent ticket id (superseded tickets and follow-on tickets)" },
+    content: { type: "string", description: "comment text (append_comment)" },
     before: {
       type: "string",
       description: "ISO ts — purge_older_than soft-deletes YOUR tickets created before this",
@@ -409,6 +502,7 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
           priority: args.priority,
           md_content: args.md_content ?? null,
           observed_session: observed ?? null,
+          parent_id: args.parent_id,
         })
         return {
           content: JSON.stringify(
@@ -440,7 +534,13 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
         if (args.id === undefined) throw new Error("get requires 'id'")
         const row = s.get(args.id, { include_deleted: args.show_deleted })
         if (!row) throw new Error(`no ticket with number ${args.id}`)
-        return { content: JSON.stringify(row, null, 2) }
+        const comments = s.getComments(args.id)
+        const rendered = comments.length
+          ? `${JSON.stringify(row, null, 2)}\n\n--- comments (chronological) ---\n${comments
+              .map((c) => `[${c.created_at}] ${c.content}`)
+              .join("\n")}`
+          : JSON.stringify(row, null, 2)
+        return { content: rendered }
       }
       case "update": {
         if (args.id === undefined) throw new Error("update requires 'id'")
@@ -451,6 +551,7 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
           status: args.status,
           priority: args.priority,
           last_actor: observed ?? null,
+          parent_id: args.parent_id,
         })
         if (!row) throw new Error(`no ticket with number ${args.id}`)
         return { content: JSON.stringify(row, null, 2) }
@@ -492,6 +593,29 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
         if (!args.since) throw new Error("list_since requires 'since' (ISO ts)")
         const rows = s.listSince(args.since, { show_deleted: args.show_deleted })
         return { content: JSON.stringify(rows, null, 2) }
+      }
+      case "append_comment": {
+        if (args.id === undefined) throw new Error("append_comment requires 'id'")
+        if (!args.content) throw new Error("append_comment requires 'content'")
+        if (!args.rollout_id) throw new Error("append_comment requires 'rollout_id' (your rollout uuid)")
+        const c = s.appendComment(args.id, args.content, args.rollout_id, observed ?? null)
+        return { content: JSON.stringify(c, null, 2) }
+      }
+      case "get_delegee_rules": {
+        return {
+          content: `Subagent (delegee) rules — obey all of them:
+- Read the repo's AGENTS.md if it exists and obey it.
+- No commit, no push, no PR creation, no watch/poll of CI.
+- Only run tests and \`git add\`.
+- No rm/reset/stash — mv to .tmp; no /tmp.
+- No issue numbers in committed files, messages, docs, comments.
+- EN/CN doc parity for any doc touched.
+- Tee all command output to .tmp/clobber_me_NN.txt (incrementing).
+- bare-env macOS proof: env -u HOMEBREW_PREFIX -u PKG_CONFIG_PATH.
+- AppVeyor checks are orphaned (ignore).
+- When extra work is discovered, record it in the ticket (append a comment) — do not chase it. Pass the orchestrator's rollout uuid.
+- The first thing you do is call get_delegee_rules and obey the returned rules.`,
+        }
       }
       default:
         throw new Error(
