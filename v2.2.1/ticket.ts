@@ -418,23 +418,28 @@ Rules:
   ticket between sessions (tidying tickets parked in dead sessions).
 - Reads (get/list/list_since) are unscoped and may filter by rollout_id.
 
-Delegation (optional but primary for big work): hand the subagent the ticket
-NUMBER, never a path — it runs ticket get id=N and reads md_content as its
-full instructions; the record must be self-contained before launch.
+Delegation (optional but primary for big work): the DELEGATOR (the main agent
+raising the ticket) sets it up and hands the subagent the ticket NUMBER,
+never a path. The DELEGATEE's first two calls: ticket get id=N (its
+instructions — the record must be self-contained before launch), then
+get_delegee_rules (the rules are for THE DELEGATEE, not the delegator). The
+delegator owns the rollout uuid, reviews the diff, runs the tests, commits.
+ticket delegate id=N prints the one-line launch prompt.
 
 Recovery (crashed session): ticket list, rebuild the todo list from the
 pending/in_progress tickets.
 
 Actions: add | list | get | update | link_md | novate | purge_older_than |
-list_since | append_comment | get_delegee_rules | help (help prints the full
-contract in one call — the recovery for a lost agent).
+list_since | append_comment | get_delegee_rules | delegate | help (help
+prints the full contract in one call — the recovery for a lost agent).
 
 - append_comment id=N rollout_id=<your uuid> content="..." adds an immutable
   comment to a ticket. Comments are the channel for gate results, follow-on
   work, blocked/andon reports, and status updates that are not state changes.
   Any session may append; the body (md_content) stays as the original spec.
-- get_delegee_rules returns the standard banner of rules every subagent must
-  obey. Subagents call it first and obey the returned rules.
+- get_delegee_rules returns the standard banner of rules every DELEGATEE must
+  obey; it is the delegatee's SECOND call (after ticket get id=N). The
+  delegator does not read it.
 - md_content is mostly immutable (write-once). The only legitimate reason to
   change the body is a fundamental re-scope, which is rare. Otherwise create
   a NEW ticket with parent_id pointing to the old one and mark the old one
@@ -453,7 +458,7 @@ const TICKET_INPUT = {
   properties: {
     action: {
       type: "string",
-      description: "add | list | get | update | link_md | novate | purge_older_than | list_since | append_comment | get_delegee_rules | help",
+      description: "add | list | get | update | link_md | novate | purge_older_than | list_since | append_comment | get_delegee_rules | delegate | help",
     },
     rollout_id: {
       type: "string",
@@ -464,7 +469,7 @@ const TICKET_INPUT = {
       type: "string",
       description: "TARGET rollout uuid (REQUIRED on novate — the session the ticket is transferred to)",
     },
-    id: { type: "number", description: "ticket number (get/update/link_md/novate)" },
+    id: { type: "number", description: "ticket number (get/update/link_md/novate/delegate)" },
     todo: { type: "string", description: "one-line summary (add; optional on update)" },
     status: { type: "string", description: "pending | in_progress | completed | cancelled" },
     priority: { type: "string", description: "high | medium | low" },
@@ -498,6 +503,17 @@ const TICKET_INPUT = {
 function helpText(): string {
   return `ticket — full contract (one call to recover it)
 
+WHO DOES WHAT (the delegator/delegatee contract — read this first):
+- The DELEGATOR (the main agent raising the ticket) SETS IT UP:
+  ticket add rollout_id=<its uuid> todo="..." (+ md_content). It OWNS the
+  rollout uuid that every mutation must carry. It does NOT call
+  get_delegee_rules — the rules are not for it.
+- The DELEGATEE (the launched subagent) is handed ONLY the ticket NUMBER.
+  Its FIRST TWO calls: ticket get id=N, then get_delegee_rules. It amends
+  the ticket as it goes, passing the OWNER's rollout uuid.
+- The DELEGATOR reviews the diff, runs the tests, commits.
+- ticket delegate id=N prints the one-line launch prompt for the hand-off.
+
 Actions and their required params:
 - add rollout_id=<your session uuid> todo="one-line summary" [md_content=...] [parent_id=N] [status=] [priority=]
   -> returns {"rollout_id","id"}; id N is the permanent ticket number
@@ -509,7 +525,8 @@ Actions and their required params:
 - purge_older_than rollout_id=<your uuid> before=<ISO ts>  (soft-delete only, your namespace)
 - list_since since=<ISO ts> [show_deleted=true]
 - append_comment id=N rollout_id=<your uuid> content="..."
-- get_delegee_rules  -> the rules every subagent must obey FIRST
+- get_delegee_rules  -> the DELEGATEE's rules (its second call, after ticket get)
+- delegate id=N  -> the one-line launch prompt for handing ticket N to a subagent
 - help  -> this text
 
 The loop: add -> todowrite item "N: <name>" at the END of the list ->
@@ -546,8 +563,14 @@ export async function execute(args: any, context: any): Promise<{ content: strin
   try {
     switch (args.action) {
       case "add": {
-        if (!args.todo) throw new Error("add requires 'todo'")
-        if (!args.rollout_id) throw new Error("add requires 'rollout_id' (your rollout uuid)")
+        // A malformed add is the signature of a confused DELEGATOR (issue #15):
+        // the error names the role and the shape, not just the missing param.
+        if (!args.todo)
+          throw new Error("add requires 'todo' — add is a DELEGATOR action: pass rollout_id (your uuid) + todo")
+        if (!args.rollout_id)
+          throw new Error(
+            "add requires 'rollout_id' (your uuid) — add is a DELEGATOR action: pass rollout_id (your uuid) + todo",
+          )
         const row = s.add({
           todo: args.todo,
           rollout_id: args.rollout_id,
@@ -656,7 +679,16 @@ export async function execute(args: any, context: any): Promise<{ content: strin
       }
       case "get_delegee_rules": {
         return {
-          content: `Subagent (delegee) rules — obey all of them:
+          content: `WHO YOU ARE: you are the DELEGATEE — a subagent launched by the main agent
+(the DELEGATOR), which raised the ticket and handed you ONLY its number. The
+rules below are for YOU; the delegator does not read them. Your first two
+calls: ticket get id=N (your instructions), then this read (you are doing it
+now). Amend the ticket as you work — every update/append_comment passes the
+OWNER's rollout uuid (the delegator's session uuid, named in the ticket row
+and in the launch prompt). The DELEGATOR reviews the diff, runs the tests,
+and commits — you do not.
+
+Subagent (delegee) rules — obey all of them:
 - Read the repo's AGENTS.md if it exists and obey it.
 - No commit, no push, no PR creation, no watch/poll of CI.
 - Only run tests and \`git add\`.
@@ -667,7 +699,20 @@ export async function execute(args: any, context: any): Promise<{ content: strin
 - bare-env macOS proof: env -u HOMEBREW_PREFIX -u PKG_CONFIG_PATH.
 - AppVeyor checks are orphaned (ignore).
 - When extra work is discovered, record it in the ticket (append a comment) — do not chase it. Pass the orchestrator's rollout uuid.
-- The first thing you do is call get_delegee_rules and obey the returned rules.`,
+- Mark your todo item/ticket done when the work is done; the ORCHESTRATOR
+  removes todo items and soft-deletes — never you.`,
+        }
+      }
+      case "delegate": {
+        // Read-only hand-off helper (issue #15): prints the launch prompt for
+        // handing ticket N to a subagent. Reads are unscoped — any session may
+        // ask; the prompt names the OWNER's rollout uuid for the delegatee's
+        // amendments.
+        if (args.id === undefined) throw new Error("delegate requires 'id' (the ticket number to hand off)")
+        const row = s.get(args.id)
+        if (!row) throw new Error(`no ticket with number ${args.id}`)
+        return {
+          content: `Subagent: read ticket ${args.id} (ticket get id=${args.id}), then get_delegee_rules; work the plan; amend the ticket as you go with rollout_id=${row.rollout_id}; report back.`,
         }
       }
       case "help": {
@@ -675,7 +720,7 @@ export async function execute(args: any, context: any): Promise<{ content: strin
       }
       default:
         throw new Error(
-          `unknown action "${args.action}" (use add|list|get|update|link_md|novate|purge_older_than|list_since|append_comment|get_delegee_rules|help)`,
+          `unknown action "${args.action}" (use add|list|get|update|link_md|novate|purge_older_than|list_since|append_comment|get_delegee_rules|delegate|help)`,
         )
     }
   } catch (e) {
