@@ -54,9 +54,23 @@ test("help states the delegator/delegatee contract up top, before the action lis
   expect(content).toContain("DELEGATEE")
   expect(content).toContain("SETS IT UP")
   expect(content).toContain("ONLY the ticket NUMBER")
-  expect(content).toContain("FIRST TWO calls")
+  expect(content).toContain("FIRST TWO calls are READS")
   expect(content).toContain("reviews the diff, runs the tests, commits")
   expect(content).toContain("does NOT call")
+  // Immutability is the law, stated in the delegatee bullet itself (issue #15
+  // follow-up: a delegatee tried to edit the ticket as a prereq to work).
+  expect(content).toContain("NEVER edits the ticket")
+  expect(content).toContain("NO write")
+  expect(content).toContain("prerequisite")
+})
+
+test("immutability is stated as the law: write-once body, comments the only write, delegatees never link_md", async () => {
+  const res = await execute({ action: "help" }, { sessionID: "ses_test" })
+  const content = res.content
+  expect(content).toContain("THE TICKET IS IMMUTABLE")
+  expect(content).toContain("written ONCE by the DELEGATOR before launch")
+  expect(content).toContain("ONLY write after creation")
+  expect(content).toContain("A delegatee NEVER calls link_md")
 })
 
 test("get_delegee_rules opens with the division of labour, then the rules (issue #15)", async () => {
@@ -69,6 +83,13 @@ test("get_delegee_rules opens with the division of labour, then the rules (issue
   expect(content.indexOf("WHO YOU ARE")).toBeLessThan(content.indexOf("No commit, no push"))
   expect(content).toContain("No commit, no push")
   expect(content).toContain("OWNER's rollout uuid")
+  // The delegatee is told immutability and no-prereq, never "amend" (issue #15
+  // follow-up: "amend" made a delegatee edit the ticket before starting).
+  expect(content).toContain("THE TICKET IS IMMUTABLE")
+  expect(content).toContain("you NEVER edit it")
+  expect(content).toContain("never link_md")
+  expect(content).toContain("NO write to the ticket is a prerequisite")
+  expect(content).not.toContain("Amend the ticket")
 })
 
 test("every validation error names the missing param and points at help", async () => {
@@ -85,6 +106,11 @@ test("every validation error names the missing param and points at help", async 
   expect(err(await execute({ action: "link_md", id: 1, md_content: "x" }, {}))).toContain(
     "link_md requires 'rollout_id'",
   )
+  // link_md errors name the role: a body rewrite is a DELEGATOR action; a
+  // delegatee is redirected to append_comment (issue #15 follow-up).
+  expect(err(await execute({ action: "link_md", id: 1 }, {}))).toContain("DELEGATOR action")
+  expect(err(await execute({ action: "link_md", id: 1, md_content: "x" }, {}))).toContain("DELEGATOR action")
+  expect(err(await execute({ action: "link_md", id: 1 }, {}))).toContain("reports via append_comment")
   expect(err(await execute({ action: "novate", id: 1, rollout_id: "ses_a" }, {}))).toContain(
     "novate requires 'to_rollout_id'",
   )
@@ -159,6 +185,11 @@ test("delegate prints the launch prompt naming the ticket and the OWNER's rollou
   expect(res.content).toContain("get_delegee_rules")
   expect(res.content).toContain(`rollout_id=${"ses_ownerD"}`)
   expect(res.content).toContain("report back")
+  // The prompt states immutability + no-prereq, never "amend" (issue #15 follow-up).
+  expect(res.content).toContain("body is immutable")
+  expect(res.content).toContain("no write is needed to start")
+  expect(res.content).toContain("report progress as comments")
+  expect(res.content).not.toContain("amend the ticket")
   // Read-only: any session may ask, and nothing mutated.
   const got = JSON.parse((await execute({ action: "get", id: add.id }, { sessionID: "ses_anyone" })).content)
   expect(got.status).toBe("pending")

@@ -420,7 +420,9 @@ Rules:
 
 Delegation (optional but primary for big work): the DELEGATOR (the main agent
 raising the ticket) sets it up and hands the subagent the ticket NUMBER,
-never a path. The DELEGATEE's first two calls: ticket get id=N (its
+never a path. The body is written ONCE before launch — the delegatee never
+edits the ticket, and no write is a prerequisite for starting work; it
+reports via comments. The DELEGATEE's first two calls: ticket get id=N (its
 instructions — the record must be self-contained before launch), then
 get_delegee_rules (the rules are for THE DELEGATEE, not the delegator). The
 delegator owns the rollout uuid, reviews the diff, runs the tests, commits.
@@ -509,8 +511,11 @@ WHO DOES WHAT (the delegator/delegatee contract — read this first):
   rollout uuid that every mutation must carry. It does NOT call
   get_delegee_rules — the rules are not for it.
 - The DELEGATEE (the launched subagent) is handed ONLY the ticket NUMBER.
-  Its FIRST TWO calls: ticket get id=N, then get_delegee_rules. It amends
-  the ticket as it goes, passing the OWNER's rollout uuid.
+  Its FIRST TWO calls are READS: ticket get id=N, then get_delegee_rules.
+  It NEVER edits the ticket — the body is the immutable spec, and NO write
+  is a prerequisite for starting work. It reports as comments
+  (append_comment, passing the OWNER's rollout uuid) and marks its item
+  done.
 - The DELEGATOR reviews the diff, runs the tests, commits.
 - ticket delegate id=N prints the one-line launch prompt for the hand-off.
 
@@ -521,10 +526,12 @@ Actions and their required params:
 - get id=N [show_deleted=true]  -> row + comments (chronological)
 - update id=N rollout_id=<owner uuid> [todo=] [status=] [priority=] [parent_id=N]
 - link_md id=N rollout_id=<owner uuid> md_content=<contents> [md_path=annotation]
+  (DELEGATOR: writes the immutable body BEFORE launch — a delegatee never calls it)
 - novate id=N rollout_id=<current owner> to_rollout_id=<target uuid>
 - purge_older_than rollout_id=<your uuid> before=<ISO ts>  (soft-delete only, your namespace)
 - list_since since=<ISO ts> [show_deleted=true]
 - append_comment id=N rollout_id=<your uuid> content="..."
+  (the delegatee's ONLY write: reports — never a prerequisite)
 - get_delegee_rules  -> the DELEGATEE's rules (its second call, after ticket get)
 - delegate id=N  -> the one-line launch prompt for handing ticket N to a subagent
 - help  -> this text
@@ -539,8 +546,11 @@ Ownership: every mutation (add, update, link_md, novate, purge_older_than,
 append_comment) requires rollout_id. A mutation by a non-owner is REFUSED and
 names the owner. Reads (get/list/list_since) are unscoped.
 
-Immutability: md_content is write-once — the body is the spec. Everything
-after creation goes into comments. Fundamental re-scope only: NEW ticket with
+Immutability: THE TICKET IS IMMUTABLE. The body (md_content) is the spec,
+written ONCE by the DELEGATOR before launch. Comments (append_comment) are
+the ONLY write after creation, and they are REPORTS — gate results,
+findings, blockers — never a prerequisite. A delegatee NEVER calls link_md
+and never edits the body. Fundamental re-scope only: NEW ticket with
 parent_id pointing at the old one, old one marked superseded (terminal,
 distinct from cancelled = abandoned).
 
@@ -633,9 +643,17 @@ export async function execute(args: any, context: any): Promise<{ content: strin
         return { content: JSON.stringify(row, null, 2) }
       }
       case "link_md": {
+        // A body rewrite is the DELEGATOR's setup move (issue #15): the error
+        // names the role so a delegatee that mistook link_md for its channel
+        // is redirected to append_comment.
         if (args.id === undefined || args.md_content === undefined)
-          throw new Error("link_md requires 'id' and 'md_content' (the record lives IN the DB)")
-        if (!args.rollout_id) throw new Error("link_md requires 'rollout_id' (the owning rollout uuid)")
+          throw new Error(
+            "link_md requires 'id' and 'md_content' (the record lives IN the DB) — link_md rewrites the ticket body: a DELEGATOR action (write-once spec, set before launch); a delegatee reports via append_comment",
+          )
+        if (!args.rollout_id)
+          throw new Error(
+            "link_md requires 'rollout_id' (the owning rollout uuid) — link_md rewrites the ticket body: a DELEGATOR action; a delegatee reports via append_comment",
+          )
         const row = s.linkMd(args.id, args.md_content, args.rollout_id, args.md_path, observed ?? null)
         if (!row) throw new Error(`no ticket with number ${args.id}`)
         return { content: JSON.stringify(row, null, 2) }
@@ -683,10 +701,15 @@ export async function execute(args: any, context: any): Promise<{ content: strin
 (the DELEGATOR), which raised the ticket and handed you ONLY its number. The
 rules below are for YOU; the delegator does not read them. Your first two
 calls: ticket get id=N (your instructions), then this read (you are doing it
-now). Amend the ticket as you work — every update/append_comment passes the
-OWNER's rollout uuid (the delegator's session uuid, named in the ticket row
-and in the launch prompt). The DELEGATOR reviews the diff, runs the tests,
-and commits — you do not.
+now). THE TICKET IS IMMUTABLE: the body was written once by the delegator
+before your launch — you NEVER edit it (never link_md, never rewrite
+md_content), and NO write to the ticket is a prerequisite for starting work:
+read the ticket, read these rules, then DO THE WORK. Your only writes are
+append_comment reports (progress, gate results, extra findings — pass the
+OWNER's rollout uuid, the delegator's session uuid, named in the ticket row
+and in the launch prompt) and marking your item done. Comments are reports
+as you go or at the end — never a prerequisite. The DELEGATOR reviews the
+diff, runs the tests, and commits — you do not.
 
 Subagent (delegee) rules — obey all of them:
 - Read the repo's AGENTS.md if it exists and obey it.
@@ -712,7 +735,7 @@ Subagent (delegee) rules — obey all of them:
         const row = s.get(args.id)
         if (!row) throw new Error(`no ticket with number ${args.id}`)
         return {
-          content: `Subagent: read ticket ${args.id} (ticket get id=${args.id}), then get_delegee_rules; work the plan; amend the ticket as you go with rollout_id=${row.rollout_id}; report back.`,
+          content: `Subagent: read ticket ${args.id} (ticket get id=${args.id}), then get_delegee_rules; the ticket body is immutable and no write is needed to start — work the plan; report progress as comments (append_comment with rollout_id=${row.rollout_id}); report back.`,
         }
       }
       case "help": {

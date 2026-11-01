@@ -24,7 +24,9 @@ Tickets are the durable record. The todo list is ephemeral ordering.
 5. Delegate (optional, for big tickets): the subagent runs
    `ticket get id=N`, reads the ticket (body + comments) as its full
    instructions, works the plan, and **appends comments** for gate results
-   and follow-on findings. It returns a report to the orchestrator — it does
+   and follow-on findings. NO write to the ticket is a prerequisite for
+   starting work — it reads, then works; comments are reports, never setup.
+   It returns a report to the orchestrator — it does
    NOT edit the body, change status, commit, push, open PRs, or poll CI.
    The orchestrator reviews the diff, runs the tests, commits.
 6. Closing the todo item closes ticket N automatically. Nothing to do —
@@ -34,10 +36,12 @@ Tickets are the durable record. The todo list is ephemeral ordering.
 
 ## Why tickets
 
-Tickets outlive sessions. A plan written today can be amended over weeks
-(`link_md`), handed to another session (`novate`), and read or searched from
-any repo (`ticket get id=N`, `ticket list`). That persistence is the primary
-value; subagent delegation is secondary.
+Tickets outlive sessions. A spec written today accumulates comments for
+weeks (`append_comment`), is handed to another session (`novate`), and is
+read or searched from any repo (`ticket get id=N`, `ticket list`). A
+fundamental re-scope creates a successor ticket (`parent_id` + `superseded`),
+never an in-place edit. That persistence is the primary value; subagent
+delegation is secondary.
 
 ## Immutability — the body is the spec, comments are the record
 
@@ -90,7 +94,8 @@ visible: items completed, never deleted; follow-ups pushed onto the stack.
 2. Subagent calls `ticket get id=N` (body + comments are its full
    instructions), implements, runs the local gate, then **`git add` only
    the touched files**. It returns a report — it does NOT commit, push,
-   open PRs, watch/poll CI, or edit the ticket body.
+   open PRs, watch/poll CI, or edit the ticket body (the body is immutable;
+   it needs no write to start — findings go into comments).
 3. Orchestrator, on return: marks the todo done + ticket complete
    (burndown, never delete), then re-runs the gate itself.
    - **Green** → orchestrator commits (and may push).
