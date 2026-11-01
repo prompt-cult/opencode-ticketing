@@ -276,12 +276,13 @@ The flow: create, comment, change status.
    the id N is the permanent ticket number
 2) todowrite — append item "N: <descriptive name>" at the END of the list
    (front only when the user says do it next / gives an order)
-3) Everything after creation is a comment: append_comment id=N
-   rollout_id=<your uuid> content="..." — gate results, findings, blockers,
-   reports. One at a time. A delegatee needs NO write to start work: it reads
-   the ticket (get), reads get_delegee_rules, then works — comments are
-   reports, never a prerequisite. The body is never rewritten; there is no
-   rewrite action.
+3) Everything after creation is a comment — and a comment is a SHORT
+   go/no-go note: done / not done / blocked (280 chars max), appended one
+   at a time via append_comment id=N content="...". Long reports NEVER go
+   on the ticket: detail lives in the agent's final response (or a gist).
+   A delegatee needs NO write to start work: it reads the ticket (get),
+   reads get_delegee_rules, then works. The body is never rewritten; there
+   is no rewrite action.
 4) Status is the only mutation: set_status id=N rollout_id=<OWNER uuid>
    status=pending|in_progress|completed|cancelled|superseded. Closing the
    todo item "N: …" does it automatically (the mirror writes every todowrite
@@ -309,7 +310,7 @@ const TICKET_INPUT = {
     rollout_id: {
       type: "string",
       description:
-        "YOUR rollout uuid / session id (add, append_comment; on set_status the ticket's OWNING rollout uuid)",
+        "YOUR rollout uuid / session id (add; set_status takes the ticket's OWNING uuid)",
     },
     id: { type: "number", description: "ticket number (get/append_comment/set_status)" },
     todo: { type: "string", description: "one-line summary (add)" },
@@ -317,7 +318,10 @@ const TICKET_INPUT = {
       type: "string",
       description: "the spec, written ONCE at creation — the immutable body (add)",
     },
-    content: { type: "string", description: "comment text (append_comment)" },
+    content: {
+      type: "string",
+      description: "short go/no-go note: done / not done / blocked — 280 chars max (append_comment)",
+    },
     status: {
       type: "string",
       description: "pending | in_progress | completed | cancelled | superseded (set_status; list filter)",
@@ -344,10 +348,12 @@ Actions and their required params:
   ticket number. The body (md_content) is written ONCE, here — never after.
 - get id=N  -> the row + its comments (chronological)
 - list [rollout_id=<uuid>] [status=<status>]  -> recovery reads
-- append_comment id=N rollout_id=<your uuid> content="..."
-  -> the ONLY write after creation: reports, one comment at a time. Any
-  session may append (the author is stamped for provenance). A comment is a
-  report — never a prerequisite for starting work.
+- append_comment id=N content="..."
+  -> the ONLY write after creation: a SHORT go/no-go note — done / not
+  done / blocked — 280 chars max, one comment at a time. Any session may
+  append (the author is the calling session, stamped automatically). Long
+  reports NEVER go on the ticket: detail lives in your final response (or
+  a gist), outside the ticket world.
 - set_status id=N rollout_id=<OWNER uuid> status=<pending|in_progress|
   completed|cancelled|superseded>  -> the ONLY mutation. Owner-gated.
 - get_delegee_rules  -> the DELEGATEE's banner (its second call, after get)
@@ -420,7 +426,8 @@ export async function execute(args: any, context: any): Promise<{ content: strin
           ),
         }
       case "get": {
-        if (args.id === undefined) throw new Error("get requires 'id'")
+        if (args.id === undefined)
+          throw new Error('get requires \'id\' — the corrected call: ticket {"action":"get","id":<N>}')
         const row = s.get(args.id)
         if (!row) throw new Error(`no ticket with number ${args.id}`)
         const comments = s.getComments(args.id)
@@ -432,16 +439,28 @@ export async function execute(args: any, context: any): Promise<{ content: strin
         return { content: rendered }
       }
       case "append_comment": {
-        if (args.id === undefined) throw new Error("append_comment requires 'id'")
-        if (!args.content) throw new Error("append_comment requires 'content'")
-        if (!args.rollout_id) throw new Error("append_comment requires 'rollout_id' (your uuid — the author is stamped for provenance)")
-        const c = s.appendComment(args.id, args.content, args.rollout_id, observed ?? null)
+        // A comment is a SHORT go/no-go note — done / not done / blocked.
+        // Essays never go on the ticket: long reports live in the agent's
+        // final response (or a gist), outside the ticket world. The cap is
+        // also what keeps the call shape small enough to emit reliably.
+        if (args.id === undefined)
+          throw new Error('append_comment requires \'id\' — the corrected call: ticket {"action":"append_comment","id":<N>,"content":"<short note>"}')
+        if (!args.content)
+          throw new Error('append_comment requires \'content\' — the corrected call: ticket {"action":"append_comment","id":' + args.id + ',"content":"<short note>"}')
+        if (typeof args.content === "string" && args.content.length > 280)
+          throw new Error(
+            "a comment is a short go/no-go note — done / not done / blocked (280 chars max). Long reports never go on the ticket: put the detail in your final response (or a gist)",
+          )
+        const c = s.appendComment(args.id, args.content, observed ?? null, observed ?? null)
         return { content: JSON.stringify(c, null, 2) }
       }
       case "set_status": {
-        if (args.id === undefined) throw new Error("set_status requires 'id'")
-        if (!args.status) throw new Error("set_status requires 'status' (pending|in_progress|completed|cancelled|superseded)")
-        if (!args.rollout_id) throw new Error("set_status requires 'rollout_id' (the ticket's OWNING rollout uuid)")
+        if (args.id === undefined)
+          throw new Error('set_status requires \'id\' — the corrected call: ticket {"action":"set_status","id":<N>,"rollout_id":"<owner uuid>","status":"<status>"}')
+        if (!args.status)
+          throw new Error('set_status requires \'status\' — the corrected call: ticket {"action":"set_status","id":' + args.id + ',"rollout_id":"<owner uuid>","status":"pending|in_progress|completed|cancelled|superseded"}')
+        if (!args.rollout_id)
+          throw new Error('set_status requires \'rollout_id\' — the corrected call: ticket {"action":"set_status","id":' + args.id + ',"rollout_id":"<owner uuid>","status":"' + args.status + '"}')
         const row = s.setStatus(args.id, {
           rollout_id: args.rollout_id,
           status: args.status,
@@ -469,12 +488,13 @@ calls: ticket get id=N (your instructions), then this read (you are doing it
 now). THE TICKET IS IMMUTABLE: the body was written once by the delegator
 before your launch — there is no rewrite action, and NO write to the ticket is
 a prerequisite for starting work: read the ticket, read these rules, then DO
-THE WORK. Your only writes are append_comment reports (progress, gate
-results, extra findings — pass your own session uuid; any session may
-append) and, when the work is done, set_status with the OWNER's rollout uuid
-(named in the ticket row and the launch prompt). Comments are reports as you
-go or at the end — never a prerequisite. The DELEGATOR reviews the diff, runs
-the tests, and commits — you do not.
+THE WORK. Your only writes are append_comment notes — SHORT go/no-go:
+done / not done / blocked, 280 chars max — and, when the work is done,
+set_status with the OWNER's rollout uuid (named in the ticket row and the
+launch prompt). Long reports NEVER go on the ticket: put the detail in your
+final response to the orchestrator (or a gist). Comments are notes as you
+go or at the end — never a prerequisite. The DELEGATOR reviews the diff,
+runs the tests, and commits — you do not.
 
 Subagent (delegee) rules — obey all of them:
 - Read the repo's AGENTS.md if it exists and obey it.

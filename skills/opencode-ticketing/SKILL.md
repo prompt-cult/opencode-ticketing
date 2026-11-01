@@ -19,9 +19,11 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
 2. `todowrite` — append item **`N: <descriptive name>`** at the END of the
    list. Front-jump only when the user says "do it next" or gives an
    explicit order. Closing the item closes ticket N automatically.
-3. Everything after creation is a comment: `append_comment id=N
-   rollout_id=<your uuid> content="..."` — gate results, follow-on
-   findings, blockers. One at a time.
+3. Everything after creation is a comment — and a comment is a SHORT
+   go/no-go note: done / not done / blocked, 280 chars max:
+   `append_comment id=N content="..."`. Long reports NEVER go on the
+   ticket: detail lives in the agent's final response (or a gist). One
+   comment at a time.
 4. Status is the only mutation: `set_status id=N rollout_id=<OWNER uuid>
    status=…` (pending|in_progress|completed|cancelled|superseded), or the
    todo mirror does it for you. To supersede: set the status and name the
@@ -53,17 +55,19 @@ rules. The tool is the single source of truth for delegee rules.
 ## Rules
 
 - Every ticket belongs to a rollout: pass YOUR session uuid (`ses_…`) on
-  `add`/`append_comment`; on `set_status` pass the ticket's OWNING uuid.
-  Mutations outside the owner's namespace are refused and the error names
-  the owner.
+  `add`; on `set_status` pass the ticket's OWNING uuid. Mutations outside
+  the owner's namespace are refused and the error names the owner.
+- Comments are short go/no-go notes (done / not done / blocked, 280 chars
+  max) — never essays. Long reports live in the agent's final response
+  (or a gist), never on the ticket. Any session may append (the author is
+  the calling session, stamped automatically); only the owner may change
+  status.
 - The body (`md_content`) is written once at `add`; it is never rewritten.
   Comments are the record after that — like a Jira issue: description is
   the spec, comment stream is the history.
 - Recovery (crashed session): `ticket list`, rebuild the todo list from
   the pending/in_progress rows.
 - Never read the sqlite file directly — use the `ticket` tool.
-- Any session may append a comment (the author is stamped for provenance);
-  only the owner may change status.
 
 ## Setup (once per environment, with the user's permission)
 

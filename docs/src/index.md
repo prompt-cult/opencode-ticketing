@@ -13,11 +13,12 @@ ticket is the centre of attention.
 A ticket's body (`md_content`) is **the spec, written once** at creation.
 It is never rewritten — there is no rewrite action.
 
-- **Everything after creation is a comment.** `append_comment` is the only
-  write a working agent makes: gate results, follow-on findings, blocker
-  reports. Comments are the record — appended one at a time, **never a
-  prerequisite to starting work**. A delegatee needs NO write to start:
-  read the ticket, read the rules, then do the work.
+- **Everything after creation is a comment — and a comment is a SHORT
+  go/no-go note**: done / not done / blocked, 280 chars max, one at a
+  time. Long reports NEVER go on the ticket: detail lives in the agent's
+  final response (or a gist), outside the ticket world. A delegatee
+  needs NO write to start: read the ticket, read the rules, then do the
+  work.
 - **Status is the only field that ever changes** — and the todo mirror
   writes it automatically: closing the todo item `N: …` closes ticket N.
   `set_status` covers the rest (owner-gated), including `superseded`:
@@ -46,12 +47,15 @@ history.
 
 ```
 add rollout_id=<uuid> todo="…" [md_content=spec]   create the immutable ticket
-append_comment id=N rollout_id=<uuid> content="…"  append one comment
+append_comment id=N content="…"                    append one SHORT note (280 max)
 set_status id=N rollout_id=<OWNER uuid> status=…   the only mutation
 get id=N                                           read the ticket + comments
 list [rollout_id=] [status=]                       recovery reads
 get_delegee_rules / help                           the delegatee banner / the contract
 ```
+
+A comment is a short go/no-go note — done / not done / blocked. Long reports
+never go on the ticket: they live in the agent's final response (or a gist).
 
 Statuses: `pending | in_progress | completed | cancelled | superseded`.
 Closing the todo item `N: …` sets ticket N's status automatically (the

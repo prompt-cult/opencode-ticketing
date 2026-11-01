@@ -11,10 +11,10 @@ opencode 的 skill + 配套插件：ticket 是关注中心。
 Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它从不被重写 ——
 没有重写动作。
 
-- **创建之后的一切都是评论。** `append_comment` 是工作 agent 唯一的写入：
-  gate 结果、后续发现、阻塞报告。评论是记录 —— 一次一条,
-  **绝不是开始工作的前置条件**。delegatee 开始工作不需要任何写入：
-  读 ticket、读规则,然后干活。
+- **创建之后的一切都是评论 —— 评论是简短的 go/no-go 便签**：
+  done / not done / blocked,最多 280 字符,一次一条。长报告**绝不**上
+  ticket:细节放在 agent 的最终回复里（或 gist）,在 ticket 世界之外。
+  delegatee 开始工作不需要任何写入:读 ticket、读规则,然后干活。
 - **只有状态会变** —— todo 镜像自动写它：关闭 todo 项 `N: …` 即关闭
   ticket N。`set_status` 覆盖其余情况（仅限所有者），包括 `superseded`：
   重定范围 = 一次状态变更 + 一条指明继任者的评论。
@@ -40,12 +40,15 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 
 ```
 add rollout_id=<uuid> todo="…" [md_content=spec]   创建不可变 ticket
-append_comment id=N rollout_id=<uuid> content="…"  追加一条评论
+append_comment id=N content="…"                    追加一条简短便签（最多 280）
 set_status id=N rollout_id=<所有者 uuid> status=…  唯一的变更
 get id=N                                           读 ticket + 评论
 list [rollout_id=] [status=]                       恢复用读取
 get_delegee_rules / help                           delegatee 横幅 / 完整契约
 ```
+
+评论是简短的 go/no-go 便签 —— done / not done / blocked。长报告绝不
+上 ticket:放在最终回复里（或 gist）。
 
 状态：`pending | in_progress | completed | cancelled | superseded`。
 关闭 todo 项 `N: …` 会自动设置 ticket N 的状态（插件镜像每次

@@ -48,7 +48,7 @@ test("get_delegee_rules opens with the division of labour, immutability and no-p
   expect(content).toContain("STOP calling it")
 })
 
-test("the happy path: add persists the body once; append comments one at a time; get renders both", async () => {
+test("the happy path: add persists the body once; short comments append one at a time; get renders both", async () => {
   const add = JSON.parse(
     (await execute(
       { action: "add", todo: "happy path", rollout_id: "ses_happy", md_content: "# the spec, written once" },
@@ -57,19 +57,42 @@ test("the happy path: add persists the body once; append comments one at a time;
   )
   expect(add.id).toBeGreaterThan(0)
   expect(add.ticket.status).toBe("pending")
-  for (const text of ["first report", "second report"]) {
+  for (const text of ["done", "blocked on env"]) {
     const c = JSON.parse(
       (await execute(
-        { action: "append_comment", id: add.id, rollout_id: "ses_commenter", content: text },
+        { action: "append_comment", id: add.id, content: text },
         { sessionID: "ses_commenter" },
       )).content,
     )
     expect(c.ticket_id).toBe(add.id)
+    expect(c.author_rollout_id).toBe("ses_commenter")
   }
   const got = (await execute({ action: "get", id: add.id }, { sessionID: "ses_anyone" })).content
   expect(got).toContain('"md_content": "# the spec, written once"')
   expect(got).toContain("--- comments (chronological) ---")
-  expect(got.indexOf("first report")).toBeLessThan(got.indexOf("second report"))
+  expect(got.indexOf("done")).toBeLessThan(got.indexOf("blocked on env"))
+})
+
+test("a comment is a short go/no-go note: essays are refused, the cap echoes the alternative channels", async () => {
+  const add = JSON.parse(
+    (await execute({ action: "add", todo: "cap test", rollout_id: "ses_cap" }, { sessionID: "ses_cap" })).content,
+  )
+  const essay = "x".repeat(281)
+  const refused = err(await execute({ action: "append_comment", id: add.id, content: essay }, { sessionID: "ses_cap" }))
+  expect(refused).toContain("280 chars max")
+  expect(refused).toContain("never go on the ticket")
+  expect(refused).toContain("gist")
+  const ok = await execute(
+    { action: "append_comment", id: add.id, content: "DONE: gates green (321/0/0/0), commit abc1234" },
+    { sessionID: "ses_cap" },
+  )
+  expect(JSON.parse(ok.content).ticket_id).toBe(add.id)
+  // Exactly 280 is allowed.
+  const edge = await execute(
+    { action: "append_comment", id: add.id, content: "y".repeat(280) },
+    { sessionID: "ses_cap" },
+  )
+  expect(JSON.parse(edge.content).ticket_id).toBe(add.id)
 })
 
 test("set_status is the only mutation, owner-gated; superseded needs no linkage — a comment carries the successor", async () => {
@@ -100,23 +123,25 @@ test("set_status is the only mutation, owner-gated; superseded needs no linkage 
   ))).toContain("status must be one of")
 })
 
-test("every validation error names the missing param and points at help; add names its role", async () => {
+test("every validation error names the missing param, prints the corrected call, and points at help", async () => {
   const hint = 'ticket {"action":"help"}'
   expect(err(await execute({ action: "add" }, {}))).toContain("add requires 'todo'")
   expect(err(await execute({ action: "add", todo: "x" }, {}))).toContain("add requires 'rollout_id'")
   expect(err(await execute({ action: "add" }, {}))).toContain("the immutable record")
-  expect(err(await execute({ action: "get" }, {}))).toContain("get requires 'id'")
+  expect(err(await execute({ action: "get" }, {}))).toContain('the corrected call: ticket {"action":"get"')
   expect(err(await execute({ action: "append_comment", id: 1 }, {}))).toContain("append_comment requires 'content'")
-  expect(err(await execute({ action: "append_comment", id: 1, content: "x" }, {}))).toContain(
-    "append_comment requires 'rollout_id'",
+  expect(err(await execute({ action: "append_comment", id: 1 }, {}))).toContain('the corrected call: ticket {"action":"append_comment"')
+  expect(err(await execute({ action: "append_comment", content: "x" }, {}))).toContain(
+    "append_comment requires 'id'",
   )
   expect(err(await execute({ action: "set_status", id: 1 }, {}))).toContain("set_status requires 'status'")
+  expect(err(await execute({ action: "set_status", id: 1 }, {}))).toContain('the corrected call: ticket {"action":"set_status"')
   expect(err(await execute({ action: "set_status", id: 1, status: "completed" }, {}))).toContain(
     "set_status requires 'rollout_id'",
   )
   for (const res of [
     await execute({ action: "add" }, {}),
-    await execute({ action: "append_comment", id: 1, content: "x" }, {}),
+    await execute({ action: "get" }, {}),
     await execute({ action: "set_status", id: 1, status: "completed" }, {}),
   ])
     expect(res.content).toContain(hint)
