@@ -426,7 +426,8 @@ Recovery (crashed session): ticket list, rebuild the todo list from the
 pending/in_progress tickets.
 
 Actions: add | list | get | update | link_md | novate | purge_older_than |
-list_since | append_comment | get_delegee_rules.
+list_since | append_comment | get_delegee_rules | help (help prints the full
+contract in one call — the recovery for a lost agent).
 
 - append_comment id=N rollout_id=<your uuid> content="..." adds an immutable
   comment to a ticket. Comments are the channel for gate results, follow-on
@@ -442,14 +443,17 @@ list_since | append_comment | get_delegee_rules.
   abandoned/will-not-fix). A superseded ticket's parent_id points to its
   replacement.
 - parent_id links a ticket to its parent (superseded tickets and follow-on
-  tickets).`
+  tickets).
+- Mark-complete vs drop: a subagent MARKS its todo item/ticket done; only the
+  ORCHESTRATOR removes todo items from the list and only the orchestrator
+  soft-deletes (purge_older_than, rollout-scoped). The tool never hard-deletes.`
 
 const TICKET_INPUT = {
   type: "object",
   properties: {
     action: {
       type: "string",
-      description: "add | list | get | update | link_md | novate | purge_older_than | list_since | append_comment | get_delegee_rules",
+      description: "add | list | get | update | link_md | novate | purge_older_than | list_since | append_comment | get_delegee_rules | help",
     },
     rollout_id: {
       type: "string",
@@ -487,7 +491,56 @@ const TICKET_INPUT = {
 // No declared `output`: the registry validates a declared output at runtime,
 // and this tool returns free-form JSON strings as content only.
 
-async function execute(args: any, context: any): Promise<{ content: string }> {
+// The full contract in one string. This is the ONE-call recovery for an agent
+// that lost the tool's shape (issue #13's observed 9-call loop is the driver):
+// every validation error points here, and this text alone is enough to make
+// every correct call shape.
+function helpText(): string {
+  return `ticket — full contract (one call to recover it)
+
+Actions and their required params:
+- add rollout_id=<your session uuid> todo="one-line summary" [md_content=...] [parent_id=N] [status=] [priority=]
+  -> returns {"rollout_id","id"}; id N is the permanent ticket number
+- list [status=] [rollout_id=] [show_deleted=true]
+- get id=N [show_deleted=true]  -> row + comments (chronological)
+- update id=N rollout_id=<owner uuid> [todo=] [status=] [priority=] [parent_id=N]
+- link_md id=N rollout_id=<owner uuid> md_content=<contents> [md_path=annotation]
+- novate id=N rollout_id=<current owner> to_rollout_id=<target uuid>
+- purge_older_than rollout_id=<your uuid> before=<ISO ts>  (soft-delete only, your namespace)
+- list_since since=<ISO ts> [show_deleted=true]
+- append_comment id=N rollout_id=<your uuid> content="..."
+- get_delegee_rules  -> the rules every subagent must obey FIRST
+- help  -> this text
+
+The loop: add -> todowrite item "N: <name>" at the END of the list ->
+plan file .tmp/tickets/NNN_slug.md -> link_md (DB copy is the record) ->
+delegate by ticket NUMBER, never a path -> closing the todo item closes
+ticket N (the plugin mirrors every todowrite flush, scoped to the flushing
+session's own tickets).
+
+Ownership: every mutation (add, update, link_md, novate, purge_older_than,
+append_comment) requires rollout_id. A mutation by a non-owner is REFUSED and
+names the owner. Reads (get/list/list_since) are unscoped.
+
+Immutability: md_content is write-once — the body is the spec. Everything
+after creation goes into comments. Fundamental re-scope only: NEW ticket with
+parent_id pointing at the old one, old one marked superseded (terminal,
+distinct from cancelled = abandoned).
+
+Mark-complete vs drop: a subagent MARKS its todo item/ticket done; only the
+ORCHESTRATOR removes todo items and soft-deletes (purge_older_than,
+rollout-scoped). Nothing is ever hard-deleted.
+
+Recovery (crashed session): ticket list, rebuild the todo list from the
+pending/in_progress rows. Never read the SQLite file directly — the tool is
+the API.`
+}
+
+// Appended to every validation error: the error names the violated clause and
+// the fix; the hint routes the recovery through ONE help call.
+const HELP_HINT = " — recover with one call: ticket {\"action\":\"help\"}"
+
+export async function execute(args: any, context: any): Promise<{ content: string }> {
   const s = getStore()
   const observed = context?.sessionID
   try {
@@ -617,13 +670,18 @@ async function execute(args: any, context: any): Promise<{ content: string }> {
 - The first thing you do is call get_delegee_rules and obey the returned rules.`,
         }
       }
+      case "help": {
+        return { content: helpText() }
+      }
       default:
         throw new Error(
-          `unknown action "${args.action}" (use add|list|get|update|link_md|novate|purge_older_than|list_since)`,
+          `unknown action "${args.action}" (use add|list|get|update|link_md|novate|purge_older_than|list_since|append_comment|get_delegee_rules|help)`,
         )
     }
   } catch (e) {
-    return { content: `ticket error: ${(e as Error).message}` }
+    // Contract-echoing: every error names its violated clause (the throw site)
+    // and routes recovery through ONE help call.
+    return { content: `ticket error: ${(e as Error).message}${HELP_HINT}` }
   }
 }
 
