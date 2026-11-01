@@ -1,0 +1,17 @@
+[book]
+title = "opencode-ticketing"
+authors = ["Simon Massey"]
+language = "en"
+src = "docs/src"
+
+[build]
+build-dir = "_book"
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/prompt-cult/opencode-ticketing"
+
+[output.html.search]
+enable = true

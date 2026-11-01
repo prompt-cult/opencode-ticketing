@@ -1,2 +1,6 @@
 .tmp/*
 !.tmp/keep
+
+# mdBook build output
+/_book
+
