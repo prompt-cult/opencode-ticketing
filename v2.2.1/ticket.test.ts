@@ -1,7 +1,8 @@
-// ticket.test.ts — the self-contained entry's contract, exercised with
-// bun:test without loading opencode (the module is import-free outside
-// builtins). TICKET_DB_HOME is pointed at a gitignored scratch dir so the
-// shared ticket DB is never touched.
+// ticket.test.ts — the simple contract: an immutable ticket, an append-only
+// comment stream, and status as the only mutation. Exercised with bun:test
+// without loading opencode (the module is import-free outside builtins).
+// TICKET_DB_HOME is pointed at a gitignored scratch dir so the shared ticket
+// DB is never touched.
 import { test, expect, beforeAll } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { join } from "node:path"
@@ -11,192 +12,130 @@ beforeAll(() => {
   process.env.TICKET_DB_HOME = mkdtempSync(join(".tmp", "ticket-test-"))
 })
 
-const HELP_ACTIONS = [
-  "add",
-  "list",
-  "get",
-  "update",
-  "link_md",
-  "novate",
-  "purge_older_than",
-  "list_since",
-  "append_comment",
-  "get_delegee_rules",
-  "delegate",
-  "help",
-]
+const ACTIONS = ["add", "get", "list", "append_comment", "set_status", "get_delegee_rules", "help"]
 
 function err(res: { content: string }): string {
   expect(res.content).toStartWith("ticket error: ")
   return res.content
 }
 
-test("help prints the full contract: every action, the loop, ownership, immutability, mark-complete vs drop", async () => {
+test("help prints the whole contract: the idea, every action, delegation, no dead verbs", async () => {
   const res = await execute({ action: "help" }, { sessionID: "ses_test" })
-  for (const action of HELP_ACTIONS) {
-    expect(res.content).toContain(action)
+  const content = res.content
+  expect(content).toContain("IMMUTABLE record")
+  expect(content).toContain("APPEND-ONLY comment stream")
+  expect(content).toContain("only field that ever changes")
+  for (const action of ACTIONS) {
+    expect(content).toContain(action)
   }
-  expect(res.content).toContain("rollout_id")
-  expect(res.content).toContain("ORCHESTRATOR")
-  expect(res.content).toContain("ever hard-deleted")
-  expect(res.content).toContain("superseded")
-  expect(res.content).toContain("purge_older_than")
+  // The deleted verbs are gone from the contract.
+  for (const dead of ["link_md", "novate", "purge_older_than", "list_since", "update", "delegate"]) {
+    expect(content).not.toContain(`${dead} `)
+  }
+  expect(content).toContain("no rewrite action")
+  expect(content).toContain("delete action")
 })
 
-test("help states the delegator/delegatee contract up top, before the action list (issue #15)", async () => {
-  const res = await execute({ action: "help" }, { sessionID: "ses_test" })
-  const content = res.content
-  // The contract paragraph is unmissable: it sits between the title and the
-  // action list, and names both roles with their duties.
-  expect(content.indexOf("WHO DOES WHAT")).toBeGreaterThan(-1)
-  expect(content.indexOf("WHO DOES WHAT")).toBeLessThan(content.indexOf("Actions and their required params"))
-  expect(content).toContain("DELEGATOR")
-  expect(content).toContain("DELEGATEE")
-  expect(content).toContain("SETS IT UP")
-  expect(content).toContain("ONLY the ticket NUMBER")
-  expect(content).toContain("FIRST TWO calls are READS")
-  expect(content).toContain("reviews the diff, runs the tests, commits")
-  expect(content).toContain("does NOT call")
-  // Immutability is the law, stated in the delegatee bullet itself (issue #15
-  // follow-up: a delegatee tried to edit the ticket as a prereq to work).
-  expect(content).toContain("NEVER edits the ticket")
-  expect(content).toContain("NO write")
-  expect(content).toContain("prerequisite")
-})
-
-test("immutability is stated as the law: write-once body, comments the only write, delegatees never link_md", async () => {
-  const res = await execute({ action: "help" }, { sessionID: "ses_test" })
-  const content = res.content
-  expect(content).toContain("THE TICKET IS IMMUTABLE")
-  expect(content).toContain("written ONCE by the DELEGATOR before launch")
-  expect(content).toContain("ONLY write after creation")
-  expect(content).toContain("A delegatee NEVER calls link_md")
-})
-
-test("get_delegee_rules opens with the division of labour, then the rules (issue #15)", async () => {
+test("get_delegee_rules opens with the division of labour, immutability and no-prereq", async () => {
   const res = await execute({ action: "get_delegee_rules" }, { sessionID: "ses_test" })
   const content = res.content
-  expect(content).toContain("you are the DELEGATEE")
-  expect(content).toContain("handed you ONLY its number")
-  expect(content).toContain("first two")
-  // The roles paragraph comes BEFORE the rules list.
   expect(content.indexOf("WHO YOU ARE")).toBeLessThan(content.indexOf("No commit, no push"))
-  expect(content).toContain("No commit, no push")
-  expect(content).toContain("OWNER's rollout uuid")
-  // The delegatee is told immutability and no-prereq, never "amend" (issue #15
-  // follow-up: "amend" made a delegatee edit the ticket before starting).
+  expect(content).toContain("you are the DELEGATEE")
   expect(content).toContain("THE TICKET IS IMMUTABLE")
-  expect(content).toContain("you NEVER edit it")
-  expect(content).toContain("never link_md")
-  expect(content).toContain("NO write to the ticket is a prerequisite")
-  expect(content).not.toContain("Amend the ticket")
+  expect(content).toContain("NO write to the ticket is")
+  expect(content).toContain("prerequisite for starting work")
+  expect(content).toContain("No commit, no push")
+  expect(content).toContain("STOP calling it")
 })
 
-test("every validation error names the missing param and points at help", async () => {
-  const hint = 'ticket {"action":"help"}'
-  expect(err(await execute({ action: "add" }, {}))).toContain("add requires 'todo'")
-  expect(err(await execute({ action: "add", todo: "x" }, {}))).toContain("add requires 'rollout_id'")
-  // A malformed add names the role, not just the param (issue #15).
-  expect(err(await execute({ action: "add" }, {}))).toContain("DELEGATOR action")
-  expect(err(await execute({ action: "add", todo: "x" }, {}))).toContain("DELEGATOR action")
-  expect(err(await execute({ action: "get" }, {}))).toContain("get requires 'id'")
-  expect(err(await execute({ action: "update", id: 1 }, {}))).toContain("update requires 'rollout_id'")
-  expect(err(await execute({ action: "update" }, {}))).toContain("update requires 'id'")
-  expect(err(await execute({ action: "link_md", id: 1 }, {}))).toContain("link_md requires 'id' and 'md_content'")
-  expect(err(await execute({ action: "link_md", id: 1, md_content: "x" }, {}))).toContain(
-    "link_md requires 'rollout_id'",
-  )
-  // link_md errors name the role: a body rewrite is a DELEGATOR action; a
-  // delegatee is redirected to append_comment (issue #15 follow-up).
-  expect(err(await execute({ action: "link_md", id: 1 }, {}))).toContain("DELEGATOR action")
-  expect(err(await execute({ action: "link_md", id: 1, md_content: "x" }, {}))).toContain("DELEGATOR action")
-  expect(err(await execute({ action: "link_md", id: 1 }, {}))).toContain("reports via append_comment")
-  expect(err(await execute({ action: "novate", id: 1, rollout_id: "ses_a" }, {}))).toContain(
-    "novate requires 'to_rollout_id'",
-  )
-  expect(err(await execute({ action: "purge_older_than" }, {}))).toContain("purge_older_than requires 'before'")
-  expect(err(await execute({ action: "purge_older_than", before: "2020-01-01T00:00:00Z" }, {}))).toContain(
-    "purge_older_than requires 'rollout_id'",
-  )
-  expect(err(await execute({ action: "list_since" }, {}))).toContain("list_since requires 'since'")
-  expect(err(await execute({ action: "append_comment", id: 1 }, {}))).toContain("append_comment requires 'content'")
-  expect(err(await execute({ action: "append_comment", id: 1, content: "x" }, {}))).toContain(
-    "append_comment requires 'rollout_id'",
-  )
-  for (const content of [
-    await execute({ action: "add" }, {}),
-    await execute({ action: "update", id: 1 }, {}),
-    await execute({ action: "link_md", id: 1, md_content: "x" }, {}),
-    await execute({ action: "append_comment", id: 1, content: "x" }, {}),
-  ])
-    expect(content.content).toContain(hint)
-})
-
-test("unknown action names the valid actions and help", async () => {
-  const res = await execute({ action: "nope" }, {})
-  expect(res.content).toContain('unknown action "nope"')
-  expect(res.content).toContain("help")
-})
-
-test("a non-owner mutation is refused and the error names the owner", async () => {
-  const add = JSON.parse((await execute({ action: "add", todo: "owner test", rollout_id: "ses_ownerA" }, { sessionID: "ses_test" })).content)
-  const res = await execute(
-    { action: "update", id: add.id, rollout_id: "ses_ownerB", status: "completed" },
-    { sessionID: "ses_test" },
-  )
-  expect(res.content).toContain("refused")
-  expect(res.content).toContain("ses_ownerA")
-})
-
-test("happy path: add -> update -> get renders the row; add persists md_content", async () => {
+test("the happy path: add persists the body once; append comments one at a time; get renders both", async () => {
   const add = JSON.parse(
     (await execute(
-      { action: "add", todo: "happy path", rollout_id: "ses_happy", md_content: "# plan" },
+      { action: "add", todo: "happy path", rollout_id: "ses_happy", md_content: "# the spec, written once" },
       { sessionID: "ses_happy" },
     )).content,
   )
   expect(add.id).toBeGreaterThan(0)
-  const upd = JSON.parse(
-    (await execute({ action: "update", id: add.id, rollout_id: "ses_happy", status: "completed" }, { sessionID: "ses_happy" })).content,
-  )
-  expect(upd.status).toBe("completed")
-  const got = JSON.parse((await execute({ action: "get", id: add.id }, { sessionID: "ses_happy" })).content)
-  expect(got.md_content).toBe("# plan")
+  expect(add.ticket.status).toBe("pending")
+  for (const text of ["first report", "second report"]) {
+    const c = JSON.parse(
+      (await execute(
+        { action: "append_comment", id: add.id, rollout_id: "ses_commenter", content: text },
+        { sessionID: "ses_commenter" },
+      )).content,
+    )
+    expect(c.ticket_id).toBe(add.id)
+  }
+  const got = (await execute({ action: "get", id: add.id }, { sessionID: "ses_anyone" })).content
+  expect(got).toContain('"md_content": "# the spec, written once"')
+  expect(got).toContain("--- comments (chronological) ---")
+  expect(got.indexOf("first report")).toBeLessThan(got.indexOf("second report"))
 })
 
-test("append_comment adds an immutable comment; get renders it", async () => {
-  const add = JSON.parse((await execute({ action: "add", todo: "comment test", rollout_id: "ses_comments" }, { sessionID: "ses_comments" })).content)
-  const c = JSON.parse(
+test("set_status is the only mutation, owner-gated; superseded needs no linkage — a comment carries the successor", async () => {
+  const add = JSON.parse(
+    (await execute({ action: "add", todo: "status test", rollout_id: "ses_ownerA" }, { sessionID: "ses_test" })).content,
+  )
+  // A non-owner is refused and the error names the owner.
+  const refused = err(
+    await execute(
+      { action: "set_status", id: add.id, rollout_id: "ses_ownerB", status: "completed" },
+      { sessionID: "ses_test" },
+    ),
+  )
+  expect(refused).toContain("refused")
+  expect(refused).toContain("ses_ownerA")
+  // The owner can supersede — no parent linkage required.
+  const row = JSON.parse(
     (await execute(
-      { action: "append_comment", id: add.id, rollout_id: "ses_comments", content: "gate green" },
-      { sessionID: "ses_comments" },
+      { action: "set_status", id: add.id, rollout_id: "ses_ownerA", status: "superseded" },
+      { sessionID: "ses_ownerA" },
     )).content,
   )
-  expect(c.ticket_id).toBe(add.id)
-  const got = (await execute({ action: "get", id: add.id }, { sessionID: "ses_comments" })).content
-  expect(got).toContain("--- comments (chronological) ---")
-  expect(got).toContain("gate green")
+  expect(row.ticket.status).toBe("superseded")
+  // A bogus status is rejected with the whitelist.
+  expect(err(await execute(
+    { action: "set_status", id: add.id, rollout_id: "ses_ownerA", status: "bogus" },
+    { sessionID: "ses_ownerA" },
+  ))).toContain("status must be one of")
 })
 
-test("delegate prints the launch prompt naming the ticket and the OWNER's rollout uuid (issue #15)", async () => {
-  const add = JSON.parse((await execute({ action: "add", todo: "hand-off test", rollout_id: "ses_ownerD" }, { sessionID: "ses_ownerD" })).content)
-  const res = await execute({ action: "delegate", id: add.id }, { sessionID: "ses_anyone" })
-  expect(res.content).toContain(`ticket ${add.id}`)
-  expect(res.content).toContain("get_delegee_rules")
-  expect(res.content).toContain(`rollout_id=${"ses_ownerD"}`)
-  expect(res.content).toContain("report back")
-  // The prompt states immutability + no-prereq, never "amend" (issue #15 follow-up).
-  expect(res.content).toContain("body is immutable")
-  expect(res.content).toContain("no write is needed to start")
-  expect(res.content).toContain("report progress as comments")
-  expect(res.content).not.toContain("amend the ticket")
-  // Read-only: any session may ask, and nothing mutated.
-  const got = JSON.parse((await execute({ action: "get", id: add.id }, { sessionID: "ses_anyone" })).content)
-  expect(got.status).toBe("pending")
+test("every validation error names the missing param and points at help; add names its role", async () => {
+  const hint = 'ticket {"action":"help"}'
+  expect(err(await execute({ action: "add" }, {}))).toContain("add requires 'todo'")
+  expect(err(await execute({ action: "add", todo: "x" }, {}))).toContain("add requires 'rollout_id'")
+  expect(err(await execute({ action: "add" }, {}))).toContain("the immutable record")
+  expect(err(await execute({ action: "get" }, {}))).toContain("get requires 'id'")
+  expect(err(await execute({ action: "append_comment", id: 1 }, {}))).toContain("append_comment requires 'content'")
+  expect(err(await execute({ action: "append_comment", id: 1, content: "x" }, {}))).toContain(
+    "append_comment requires 'rollout_id'",
+  )
+  expect(err(await execute({ action: "set_status", id: 1 }, {}))).toContain("set_status requires 'status'")
+  expect(err(await execute({ action: "set_status", id: 1, status: "completed" }, {}))).toContain(
+    "set_status requires 'rollout_id'",
+  )
+  for (const res of [
+    await execute({ action: "add" }, {}),
+    await execute({ action: "append_comment", id: 1, content: "x" }, {}),
+    await execute({ action: "set_status", id: 1, status: "completed" }, {}),
+  ])
+    expect(res.content).toContain(hint)
 })
 
-test("delegate without id errors with the contract echo; delegate on a missing ticket names it", async () => {
-  expect(err(await execute({ action: "delegate" }, {}))).toContain("delegate requires 'id'")
-  expect(err(await execute({ action: "delegate" }, {}))).toContain('ticket {"action":"help"}')
-  expect(err(await execute({ action: "delegate", id: 424242 }, {}))).toContain("no ticket with number 424242")
+test("the deleted verbs are really gone: they answer unknown action", async () => {
+  for (const dead of ["update", "link_md", "novate", "purge_older_than", "list_since", "delegate"]) {
+    const res = await execute({ action: dead, id: 1, rollout_id: "ses_x" }, {})
+    expect(res.content).toContain(`unknown action "${dead}"`)
+    expect(res.content).toContain("add|get|list|append_comment|set_status|get_delegee_rules|help")
+  }
+})
+
+test("list filters by rollout_id and status; recovery reads work unscoped", async () => {
+  await execute({ action: "add", todo: "list a", rollout_id: "ses_listA" }, { sessionID: "ses_listA" })
+  await execute({ action: "add", todo: "list b", rollout_id: "ses_listB" }, { sessionID: "ses_listB" })
+  const mine = JSON.parse((await execute({ action: "list", rollout_id: "ses_listA" }, {})).content)
+  expect(mine.length).toBeGreaterThan(0)
+  expect(mine.every((r: { rollout_id: string }) => r.rollout_id === "ses_listA")).toBe(true)
+  const pending = JSON.parse((await execute({ action: "list", status: "pending" }, {})).content)
+  expect((pending as any[]).some((r) => r.todo === "list b")).toBe(true)
 })
