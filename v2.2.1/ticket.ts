@@ -378,7 +378,12 @@ WHO DOES WHAT (delegation):
 
 Mark-complete vs drop: a subagent MARKS its todo item / the ticket done; only
 the ORCHESTRATOR removes todo items. Nothing is ever deleted — there is no
-delete action. Never read the SQLite file directly — the tool is the API.`
+delete action. Never read the SQLite file directly — the tool is the API.
+
+This tool is the plugin. The suggested workflow and usage — the loop, the
+delegation cycle, plan drafting — live in the skill:
+skills/opencode-ticketing/SKILL.md (opencode's skill loader discovers it;
+the README has the two-line install).`
 }
 
 // Appended to every validation error: the error names the violated clause and

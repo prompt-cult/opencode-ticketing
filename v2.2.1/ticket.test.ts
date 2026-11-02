@@ -34,6 +34,8 @@ test("help prints the whole contract: the idea, every action, delegation, no dea
   }
   expect(content).toContain("no rewrite action")
   expect(content).toContain("delete action")
+  expect(content).toContain("SKILL.md")
+  expect(content).toContain("This tool is the plugin")
 })
 
 test("get_delegee_rules opens with the division of labour, immutability and no-prereq", async () => {
