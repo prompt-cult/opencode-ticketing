@@ -54,12 +54,12 @@ rules. The tool is the single source of truth for delegee rules.
 
 ## Rules
 
-- rollout_id IS the session id (`ses_…`) — one id, no other. By default an
-  agent uses ITS OWN session id. A delegatee told to work another session's
-  tickets uses the session id its launch prompt NAMES (on `set_status` and
-  `list`). To find tickets by another session (to adopt):
-  `list rollout_id=<that session id>`. A delegator handing work to another
-  agent names the session id to query with. Mutations outside the owner's
+- rollout_id IS the session id (`ses_…`) — one id, no other. An agent MUST
+  know its own session id: `add` and `list` take it by default. A delegator
+  handing work to a delegatee NAMES the session id the delegatee must use
+  (on `set_status` and `list`). To adopt another session's tickets:
+  `list rollout_id=<that session id>`. Access is by ticket number everywhere
+  else (`get id=N`, `append_comment id=N`). Mutations outside the owner's
   namespace are refused and the error names the owner.
 - `list` requires the session id to query (`list rollout_id=<session id>
   [status=…]`); `all=true` lists every session's. An agent must know which

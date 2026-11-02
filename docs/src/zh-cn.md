@@ -50,11 +50,12 @@ get_delegee_rules / help                                 delegatee 横幅 / 完�
 评论是简短的 go/no-go 便签 —— done / not done / blocked。长报告绝不
 上 ticket:放在最终回复里（或 gist）。
 
-`rollout_id` 就是 session id —— 只有一个 id。默认 agent 用自己的
-session id;被告知处理另一个 session 的 tickets 的 delegatee 用其启动
-提示词中指明的 session id;要认领另一个 session 的 tickets,用那个
-session id 查询。`list` 必须带 session id —— agent 必须知道自己在查
-哪个 session（`all=true` 列出所有 session 的）。
+`rollout_id` 就是 session id —— 只有一个 id。agent **必须知道自己的
+session id**:`add` 和 `list` 默认用它。委派者把工作交给 delegatee 时
+**指明 delegatee 必须使用的 session id**。要认领另一个 session 的
+tickets,用那个 session id 查询。其余操作按 ticket 编号进行。`list`
+必须带 session id —— agent 必须知道自己在查哪个 session（`all=true`
+列出所有 session 的）。
 
 状态：`pending | in_progress | completed | cancelled | superseded`。
 关闭 todo 项 `N: …` 会自动设置 ticket N 的状态（插件镜像每次

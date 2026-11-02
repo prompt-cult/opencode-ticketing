@@ -57,10 +57,11 @@ get_delegee_rules / help                                 the delegatee banner / 
 A comment is a short go/no-go note — done / not done / blocked. Long reports
 never go on the ticket: they live in the agent's final response (or a gist).
 
-`rollout_id` IS the session id — one id, no other. By default an agent uses
-its own session id; a delegatee told to work another session's tickets uses
-the session id its launch prompt names; to adopt another session's tickets,
-query with that session id. `list` requires it — an agent must know which
+`rollout_id` IS the session id — one id, no other. An agent **must know its
+own session id**: `add` and `list` take it by default. A delegator handing
+work to a delegatee **names the session id the delegatee must use**. To adopt
+another session's tickets, query with that session id. Access is by ticket
+number everywhere else. `list` requires it — an agent must know which
 session it is querying (`all=true` lists every session's).
 
 Statuses: `pending | in_progress | completed | cancelled | superseded`.

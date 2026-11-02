@@ -182,14 +182,14 @@ test("list requires the session id; all=true lists every session; the row is exa
   expect((everyone as any[]).some((r) => r.rollout_id === "ses_listB")).toBe(true)
 })
 
-test("the session-id doctrine is stated in help: one id, own session by default, launch prompt names the id", async () => {
+test("the session-id doctrine is stated in help: one id, you MUST know yours, delegators name the delegatee's", async () => {
   const res = await execute({ action: "help" }, { sessionID: "ses_test" })
   const content = res.content
   expect(content).toContain("rollout_id IS the session id")
   expect(content).toContain("one id, no other")
-  expect(content).toContain("ITS OWN session id")
-  expect(content).toContain("NAMES the session id to use")
-  expect(content).toContain("names the session id to query with")
+  expect(content).toContain("You MUST know your own session id")
+  expect(content).toContain("NAME the session id the delegatee must use")
+  expect(content).toContain("Too simple to get wrong")
 })
 
 test("add and set_status responses are clean: exactly the contract's shape", async () => {

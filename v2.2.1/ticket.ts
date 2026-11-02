@@ -262,7 +262,7 @@ stream; STATUS is the only field that ever changes. Never read the DB file
 directly; the tool is the API.
 
 The flow: create, comment, change status.
-1) ticket add rollout_id=<your session uuid> todo="one-line summary"
+1) ticket add rollout_id=<your session id> todo="one-line summary"
    [md_content=the spec, written ONCE here] -> returns {"rollout_id","id"};
    the id N is the permanent ticket number
 2) todowrite — append item "N: <descriptive name>" at the END of the list
@@ -282,13 +282,11 @@ The flow: create, comment, change status.
 5) Recovery (crashed session): ticket list rollout_id=<your session id>,
    rebuild the todo list from your pending/in_progress rows (or all=true).
 
-The session id: rollout_id IS the session id (ses_…) — one id, no other. By
-default an agent uses ITS OWN session id. A delegatee may be told to work
-another session's tickets: the launch prompt NAMES the session id to use —
-use THAT id on set_status and list. To find tickets by another session (to
-adopt): list rollout_id=<that session id>. It is obvious from context which
-session id to use; a delegator handing work to another agent names the
-session id to query with.
+The session id: rollout_id IS the session id (ses_…) — one id, no other.
+An agent MUST know its own session id: add and list take it by default. A
+delegator handing work to a delegatee NAMES the session id the delegatee
+must use. To adopt another session's tickets, list with that session id.
+Access is by ticket number everywhere else.
 
 Delegation: the DELEGATOR (main agent) creates the ticket (body self-contained
 before launch) and hands the subagent ONLY the ticket number. The DELEGATEE's
@@ -343,7 +341,7 @@ A ticket is an IMMUTABLE record with an APPEND-ONLY comment stream; STATUS is
 the only field that ever changes. That is the whole idea.
 
 Actions and their required params:
-- add rollout_id=<your session uuid> todo="one-line summary" [md_content=spec]
+- add rollout_id=<your session id> todo="one-line summary" [md_content=spec]
   -> creates the ticket; returns {"rollout_id","id"}; id N is the permanent
   ticket number. The body (md_content) is written ONCE, here — never after.
 - get id=N  -> the row + its comments (chronological)
@@ -368,13 +366,14 @@ ticket in a comment — comments are the record), cancelled, tickets outside
 the live list.
 
 The session id: rollout_id IS the session id (ses_…) — one id, no other.
-- By default an agent uses ITS OWN session id.
-- You may be told to work another session's tickets (delegation): the launch
-  prompt NAMES the session id to use — use THAT id on set_status and list.
-- To find tickets by another session (to adopt): list rollout_id=<their
+- You MUST know your own session id. add and list take YOUR session id by
+  default; set_status takes the ticket owner's.
+- When delegating, NAME the session id the delegatee must use — it uses
+  THAT id on set_status and list.
+- To find tickets by another session (to adopt): list rollout_id=<that
   session id>.
-- It is obvious from context which session id to use; a delegator handing
-  work to another agent names the session id to query with.
+- Access is by ticket number everywhere else: get id=N, append_comment
+  id=N. Too simple to get wrong.
 
 WHO DOES WHAT (delegation):
 - The DELEGATOR (main agent) creates the ticket — body self-contained before
@@ -498,8 +497,8 @@ before your launch — there is no rewrite action, and NO write to the ticket is
 a prerequisite for starting work: read the ticket, read these rules, then DO
 THE WORK. Your only writes are append_comment notes — SHORT go/no-go:
 done / not done / blocked, 280 chars max — and, when the work is done,
-set_status with the OWNER's session id (named in the ticket row and the
-launch prompt). Long reports NEVER go on the ticket: put the detail in your
+set_status with the OWNER's session id — your launch prompt NAMES it; use
+it. Long reports NEVER go on the ticket: put the detail in your
 final response to the orchestrator (or a gist). Comments are notes as you
 go or at the end — never a prerequisite. The DELEGATOR reviews the diff,
 runs the tests, and commits — you do not.
