@@ -10,7 +10,7 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
 
 ## The flow: create, comment, change status
 
-1. New task → `ticket add rollout_id=<your session uuid> todo="one-line
+1. New task → `ticket add rollout_id=<your session id> todo="one-line
    summary" md_content=<the full spec>` → returns the permanent ticket
    number **N**. The body is written ONCE, here — there is no rewrite
    action. The database copy is the record; keep the plan file in the
@@ -24,7 +24,7 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
    `append_comment id=N content="..."`. Long reports NEVER go on the
    ticket: detail lives in the agent's final response (or a gist). One
    comment at a time.
-4. Status is the only mutation: `set_status id=N rollout_id=<OWNER uuid>
+4. Status is the only mutation: `set_status id=N rollout_id=<OWNER session id>
    status=…` (pending|in_progress|completed|cancelled|superseded), or the
    todo mirror does it for you. To supersede: set the status and name the
    replacement ticket in a comment. Nothing is ever deleted.
@@ -54,9 +54,16 @@ rules. The tool is the single source of truth for delegee rules.
 
 ## Rules
 
-- Every ticket belongs to a rollout: pass YOUR session uuid (`ses_…`) on
-  `add`; on `set_status` pass the ticket's OWNING uuid. Mutations outside
-  the owner's namespace are refused and the error names the owner.
+- rollout_id IS the session id (`ses_…`) — one id, no other. By default an
+  agent uses ITS OWN session id. A delegatee told to work another session's
+  tickets uses the session id its launch prompt NAMES (on `set_status` and
+  `list`). To find tickets by another session (to adopt):
+  `list rollout_id=<that session id>`. A delegator handing work to another
+  agent names the session id to query with. Mutations outside the owner's
+  namespace are refused and the error names the owner.
+- `list` requires the session id to query (`list rollout_id=<session id>
+  [status=…]`); `all=true` lists every session's. An agent must know which
+  session it is querying.
 - Comments are short go/no-go notes (done / not done / blocked, 280 chars
   max) — never essays. Long reports live in the agent's final response
   (or a gist), never on the ticket. Any session may append (the author is
@@ -65,8 +72,8 @@ rules. The tool is the single source of truth for delegee rules.
 - The body (`md_content`) is written once at `add`; it is never rewritten.
   Comments are the record after that — like a Jira issue: description is
   the spec, comment stream is the history.
-- Recovery (crashed session): `ticket list`, rebuild the todo list from
-  the pending/in_progress rows.
+- Recovery (crashed session): `ticket list rollout_id=<your session id>`,
+  rebuild the todo list from your pending/in_progress rows (or `all=true`).
 - Never read the sqlite file directly — use the `ticket` tool.
 
 ## Setup (once per environment, with the user's permission)

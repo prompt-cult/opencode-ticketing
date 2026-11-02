@@ -46,16 +46,22 @@ history.
 ## The tool surface
 
 ```
-add rollout_id=<uuid> todo="…" [md_content=spec]   create the immutable ticket
-append_comment id=N content="…"                    append one SHORT note (280 max)
-set_status id=N rollout_id=<OWNER uuid> status=…   the only mutation
-get id=N                                           read the ticket + comments
-list [rollout_id=] [status=]                       recovery reads
-get_delegee_rules / help                           the delegatee banner / the contract
+add rollout_id=<session id> todo="…" [md_content=spec]   create the immutable ticket
+append_comment id=N content="…"                          append one SHORT note (280 max)
+set_status id=N rollout_id=<OWNER session id> status=…    the only mutation
+get id=N                                                 read the ticket + comments
+list rollout_id=<session id> [status=]                    one session's tickets (all=true: every session's)
+get_delegee_rules / help                                 the delegatee banner / the contract
 ```
 
 A comment is a short go/no-go note — done / not done / blocked. Long reports
 never go on the ticket: they live in the agent's final response (or a gist).
+
+`rollout_id` IS the session id — one id, no other. By default an agent uses
+its own session id; a delegatee told to work another session's tickets uses
+the session id its launch prompt names; to adopt another session's tickets,
+query with that session id. `list` requires it — an agent must know which
+session it is querying (`all=true` lists every session's).
 
 Statuses: `pending | in_progress | completed | cancelled | superseded`.
 Closing the todo item `N: …` sets ticket N's status automatically (the

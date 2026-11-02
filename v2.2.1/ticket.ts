@@ -19,11 +19,12 @@
 // global ticket number). Framework-free (bun:sqlite + node:fs) so it
 // can be unit-tested with bun:test without loading opencode. The plugin
 // wrapper in ticket.ts is the only consumer. Every row is NAMESPACED to
-// the rollout that owns it (rollout_id, NOT NULL): the one mutation
+// the session that owns it (rollout_id, NOT NULL): the one mutation
 // (set_status) is reachable only inside the owner's namespace, and the
 // todowrite mirror closes only the flushing session's rows. The plugin
-// stamps observed_session / last_actor from the harness-reported
-// sessionID, so the audit trail is ground truth and never caller input.
+// stamps last_actor from the harness-reported sessionID, so the audit
+// trail is ground truth and never caller input. There is ONE id: the
+// session id, which IS the rollout_id on every command.
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -36,7 +37,6 @@ export interface TicketRow {
   todo: string
   status: string
   rollout_id: string
-  observed_session: string | null
   last_actor: string | null
   md_content: string | null
 }
@@ -47,7 +47,6 @@ export interface TicketComment {
   created_at: string
   content: string
   author_rollout_id: string | null
-  author_session_id: string | null
 }
 
 // add creates the immutable record: todo is the one-line summary,
@@ -57,7 +56,6 @@ export interface AddInput {
   todo: string
   rollout_id: string
   md_content?: string | null
-  observed_session?: string | null
 }
 
 // setStatus is the ONLY mutation: status is the only mutable field.
@@ -70,6 +68,7 @@ export interface SetStatusInput {
 export interface ListFilter {
   rollout_id?: string
   status?: string
+  all?: boolean
 }
 
 const STATUSES = new Set(["pending", "in_progress", "completed", "cancelled", "superseded"])
@@ -97,7 +96,6 @@ export class TicketStore {
         todo TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
         rollout_id TEXT NOT NULL,
-        observed_session TEXT,
         last_actor TEXT,
         md_content TEXT
       );
@@ -107,7 +105,6 @@ export class TicketStore {
         created_at TEXT NOT NULL,
         content TEXT NOT NULL,
         author_rollout_id TEXT,
-        author_session_id TEXT,
         FOREIGN KEY (ticket_id) REFERENCES ticket(id)
       );
     `)
@@ -140,24 +137,31 @@ export class TicketStore {
   // set_status moves it after that.
   add(input: AddInput): TicketRow {
     if (!input.todo) throw new Error("add requires 'todo' (the one-line summary)")
-    if (!input.rollout_id) throw new Error("add requires 'rollout_id' (your rollout uuid)")
+    if (!input.rollout_id) throw new Error("add requires 'rollout_id' (your session id)")
     const ts = this.now()
     this.db.run(
-      `INSERT INTO ticket (created_at, updated_at, todo, status, rollout_id, observed_session, last_actor, md_content)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
-      [ts, ts, input.todo, input.rollout_id, input.observed_session ?? null, input.observed_session ?? null, input.md_content ?? null],
+      `INSERT INTO ticket (created_at, updated_at, todo, status, rollout_id, last_actor, md_content)
+       VALUES (?, ?, ?, 'pending', ?, NULL, ?)`,
+      [ts, ts, input.todo, input.rollout_id, input.md_content ?? null],
     )
     return this.get(Number((this.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id))!
   }
 
   get(id: number): TicketRow | undefined {
-    return (this.db.query("SELECT * FROM ticket WHERE id = ?").get(id) as TicketRow | null) ?? undefined
+    return (
+      (this.db
+        .query("SELECT id, created_at, updated_at, todo, status, rollout_id, last_actor, md_content FROM ticket WHERE id = ?")
+        .get(id) as TicketRow | null) ?? undefined
+    )
   }
 
+  // list returns ONE session's tickets by default (rollout_id = the session
+  // id to query — required); all=true drops that gate and lists every
+  // session's tickets. An agent must know which session id it is querying.
   list(filter: ListFilter = {}): TicketRow[] {
     const where: string[] = []
     const params: string[] = []
-    if (filter.rollout_id !== undefined) {
+    if (!filter.all && filter.rollout_id !== undefined) {
       where.push("rollout_id = ?")
       params.push(filter.rollout_id)
     }
@@ -165,7 +169,7 @@ export class TicketStore {
       where.push("status = ?")
       params.push(filter.status)
     }
-    const sql = `SELECT * FROM ticket ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id`
+    const sql = `SELECT id, created_at, updated_at, todo, status, rollout_id, last_actor, md_content FROM ticket ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id`
     return this.db.query(sql).all(...params) as TicketRow[]
   }
 
@@ -215,29 +219,24 @@ export class TicketStore {
   // status notes that are not state changes. No owner gate: comments are
   // reports, not mutations — any session may append, one at a time. The
   // author is stamped from the caller's rollout/session for provenance.
-  appendComment(
-    ticketId: number,
-    content: string,
-    authorRolloutId?: string | null,
-    authorSessionId?: string | null,
-  ): TicketComment {
+  appendComment(ticketId: number, content: string, authorRolloutId?: string | null): TicketComment {
     const row = this.get(ticketId)
     if (!row) throw new Error(`appendComment: no ticket with number ${ticketId}`)
     const ts = this.now()
     this.db.run(
-      `INSERT INTO ticket_comment (ticket_id, created_at, content, author_rollout_id, author_session_id)
-       VALUES (?, ?, ?, ?, ?)`,
-      [ticketId, ts, content, authorRolloutId ?? null, authorSessionId ?? null],
+      `INSERT INTO ticket_comment (ticket_id, created_at, content, author_rollout_id)
+       VALUES (?, ?, ?, ?)`,
+      [ticketId, ts, content, authorRolloutId ?? null],
     )
-    return this.db.query("SELECT * FROM ticket_comment WHERE id = ?").get(
-      Number((this.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id),
-    ) as TicketComment
+    return this.db
+      .query("SELECT id, ticket_id, created_at, content, author_rollout_id FROM ticket_comment WHERE id = ?")
+      .get(Number((this.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id)) as TicketComment
   }
 
   // getComments returns all comments for a ticket, oldest first.
   getComments(ticketId: number): TicketComment[] {
     return this.db
-      .query("SELECT * FROM ticket_comment WHERE ticket_id = ? ORDER BY created_at, id")
+      .query("SELECT id, ticket_id, created_at, content, author_rollout_id FROM ticket_comment WHERE ticket_id = ? ORDER BY created_at, id")
       .all(ticketId) as TicketComment[]
   }
 
@@ -254,14 +253,6 @@ let store: TicketStore | undefined
 function getStore(): TicketStore {
   if (!store) store = new TicketStore(ticketDbPath())
   return store
-}
-
-// uuidMismatch reports a claimed rollout_id that disagrees with the session
-// the harness actually ran the call in. It is recorded, never fatal: the audit
-// trail is the enforcement, and refusing the call would take away a caller who
-// legitimately needs to name another namespace (delegation) their only route.
-function uuidMismatch(claimed: string, observed: string | undefined): boolean {
-  return !!observed && claimed !== observed
 }
 
 const TICKET_DESCRIPTION = `Ticket database: durable tickets + global sequencer (autoincrement ticket
@@ -283,13 +274,21 @@ The flow: create, comment, change status.
    A delegatee needs NO write to start work: it reads the ticket (get),
    reads get_delegee_rules, then works. The body is never rewritten; there
    is no rewrite action.
-4) Status is the only mutation: set_status id=N rollout_id=<OWNER uuid>
+4) Status is the only mutation: set_status id=N rollout_id=<OWNER session id>
    status=pending|in_progress|completed|cancelled|superseded. Closing the
    todo item "N: …" does it automatically (the mirror writes every todowrite
    flush, scoped to the flushing session's own tickets). To supersede: set
    status=superseded and name the replacement ticket in a comment.
-5) Recovery (crashed session): ticket list, rebuild the todo list from the
-   pending/in_progress rows.
+5) Recovery (crashed session): ticket list rollout_id=<your session id>,
+   rebuild the todo list from your pending/in_progress rows (or all=true).
+
+The session id: rollout_id IS the session id (ses_…) — one id, no other. By
+default an agent uses ITS OWN session id. A delegatee may be told to work
+another session's tickets: the launch prompt NAMES the session id to use —
+use THAT id on set_status and list. To find tickets by another session (to
+adopt): list rollout_id=<that session id>. It is obvious from context which
+session id to use; a delegator handing work to another agent names the
+session id to query with.
 
 Delegation: the DELEGATOR (main agent) creates the ticket (body self-contained
 before launch) and hands the subagent ONLY the ticket number. The DELEGATEE's
@@ -310,7 +309,7 @@ const TICKET_INPUT = {
     rollout_id: {
       type: "string",
       description:
-        "YOUR rollout uuid / session id (add; set_status takes the ticket's OWNING uuid)",
+        "the session id (ses_…) — add: yours; set_status: the ticket's OWNING session; list: the session id to query",
     },
     id: { type: "number", description: "ticket number (get/append_comment/set_status)" },
     todo: { type: "string", description: "one-line summary (add)" },
@@ -326,6 +325,7 @@ const TICKET_INPUT = {
       type: "string",
       description: "pending | in_progress | completed | cancelled | superseded (set_status; list filter)",
     },
+    all: { type: "boolean", description: "list every session's tickets (list only; otherwise one session's, by rollout_id)" },
   },
   required: ["action"],
 }
@@ -347,14 +347,16 @@ Actions and their required params:
   -> creates the ticket; returns {"rollout_id","id"}; id N is the permanent
   ticket number. The body (md_content) is written ONCE, here — never after.
 - get id=N  -> the row + its comments (chronological)
-- list [rollout_id=<uuid>] [status=<status>]  -> recovery reads
+- list rollout_id=<session id> [status=<status>]  -> ONE session's tickets;
+  all=true -> every session's. The session id is required — an agent must
+  know which session it is querying.
 - append_comment id=N content="..."
   -> the ONLY write after creation: a SHORT go/no-go note — done / not
   done / blocked — 280 chars max, one comment at a time. Any session may
   append (the author is the calling session, stamped automatically). Long
   reports NEVER go on the ticket: detail lives in your final response (or
   a gist), outside the ticket world.
-- set_status id=N rollout_id=<OWNER uuid> status=<pending|in_progress|
+- set_status id=N rollout_id=<OWNER session id> status=<pending|in_progress|
   completed|cancelled|superseded>  -> the ONLY mutation. Owner-gated.
 - get_delegee_rules  -> the DELEGATEE's banner (its second call, after get)
 - help  -> this text
@@ -364,6 +366,15 @@ todo item "N: …" changes (closing the item closes the ticket). set_status is
 for everything the list does not cover: superseded (name the replacement
 ticket in a comment — comments are the record), cancelled, tickets outside
 the live list.
+
+The session id: rollout_id IS the session id (ses_…) — one id, no other.
+- By default an agent uses ITS OWN session id.
+- You may be told to work another session's tickets (delegation): the launch
+  prompt NAMES the session id to use — use THAT id on set_status and list.
+- To find tickets by another session (to adopt): list rollout_id=<their
+  session id>.
+- It is obvious from context which session id to use; a delegator handing
+  work to another agent names the session id to query with.
 
 WHO DOES WHAT (delegation):
 - The DELEGATOR (main agent) creates the ticket — body self-contained before
@@ -392,27 +403,24 @@ const HELP_HINT = " — recover with one call: ticket {\"action\":\"help\"}"
 
 export async function execute(args: any, context: any): Promise<{ content: string }> {
   const s = getStore()
-  const observed = context?.sessionID
+  const callerSession = context?.sessionID
   try {
     switch (args.action) {
       case "add": {
         if (!args.todo)
-          throw new Error("add requires 'todo' (the one-line summary) — add creates the immutable record: pass rollout_id (your uuid) + todo (+ md_content for the spec)")
+          throw new Error("add requires 'todo' (the one-line summary) — add creates the immutable record: pass rollout_id (your session id) + todo (+ md_content for the spec)")
         if (!args.rollout_id)
-          throw new Error("add requires 'rollout_id' (your uuid) — add creates the immutable record: pass rollout_id (your uuid) + todo (+ md_content for the spec)")
+          throw new Error("add requires 'rollout_id' (your session id) — add creates the immutable record: pass rollout_id (your session id) + todo (+ md_content for the spec)")
         const row = s.add({
           todo: args.todo,
           rollout_id: args.rollout_id,
           md_content: args.md_content ?? null,
-          observed_session: observed ?? null,
         })
         return {
           content: JSON.stringify(
             {
               rollout_id: row.rollout_id,
               id: row.id,
-              uuid_mismatch: uuidMismatch(row.rollout_id, observed),
-              observed_session: observed ?? null,
               ticket: row,
             },
             null,
@@ -420,17 +428,21 @@ export async function execute(args: any, context: any): Promise<{ content: strin
           ),
         }
       }
-      case "list":
+      case "list": {
+        if (!args.rollout_id && !args.all)
+          throw new Error('list requires \'rollout_id\' (the session id to query) — the corrected call: ticket {"action":"list","rollout_id":"<session id>"} — or ticket {"action":"list","all":true} for every session\'s tickets')
         return {
           content: JSON.stringify(
             s.list({
               status: args.status,
               rollout_id: args.rollout_id,
+              all: args.all,
             }),
             null,
             2,
           ),
         }
+      }
       case "get": {
         if (args.id === undefined)
           throw new Error('get requires \'id\' — the corrected call: ticket {"action":"get","id":<N>}')
@@ -457,33 +469,23 @@ export async function execute(args: any, context: any): Promise<{ content: strin
           throw new Error(
             "a comment is a short go/no-go note — done / not done / blocked (280 chars max). Long reports never go on the ticket: put the detail in your final response (or a gist)",
           )
-        const c = s.appendComment(args.id, args.content, observed ?? null, observed ?? null)
+        const c = s.appendComment(args.id, args.content, callerSession ?? null)
         return { content: JSON.stringify(c, null, 2) }
       }
       case "set_status": {
         if (args.id === undefined)
-          throw new Error('set_status requires \'id\' — the corrected call: ticket {"action":"set_status","id":<N>,"rollout_id":"<owner uuid>","status":"<status>"}')
+          throw new Error('set_status requires \'id\' — the corrected call: ticket {"action":"set_status","id":<N>,"rollout_id":"<owner session id>","status":"<status>"}')
         if (!args.status)
-          throw new Error('set_status requires \'status\' — the corrected call: ticket {"action":"set_status","id":' + args.id + ',"rollout_id":"<owner uuid>","status":"pending|in_progress|completed|cancelled|superseded"}')
+          throw new Error('set_status requires \'status\' — the corrected call: ticket {"action":"set_status","id":' + args.id + ',"rollout_id":"<owner session id>","status":"pending|in_progress|completed|cancelled|superseded"}')
         if (!args.rollout_id)
-          throw new Error('set_status requires \'rollout_id\' — the corrected call: ticket {"action":"set_status","id":' + args.id + ',"rollout_id":"<owner uuid>","status":"' + args.status + '"}')
+          throw new Error('set_status requires \'rollout_id\' — the corrected call: ticket {"action":"set_status","id":' + args.id + ',"rollout_id":"<owner session id>","status":"' + args.status + '"}')
         const row = s.setStatus(args.id, {
           rollout_id: args.rollout_id,
           status: args.status,
-          last_actor: observed ?? null,
+          last_actor: callerSession ?? null,
         })
         if (!row) throw new Error(`no ticket with number ${args.id}`)
-        return {
-          content: JSON.stringify(
-            {
-              uuid_mismatch: uuidMismatch(args.rollout_id, observed),
-              observed_session: observed ?? null,
-              ticket: row,
-            },
-            null,
-            2,
-          ),
-        }
+        return { content: JSON.stringify(row, null, 2) }
       }
       case "get_delegee_rules": {
         return {
@@ -496,7 +498,7 @@ before your launch — there is no rewrite action, and NO write to the ticket is
 a prerequisite for starting work: read the ticket, read these rules, then DO
 THE WORK. Your only writes are append_comment notes — SHORT go/no-go:
 done / not done / blocked, 280 chars max — and, when the work is done,
-set_status with the OWNER's rollout uuid (named in the ticket row and the
+set_status with the OWNER's session id (named in the ticket row and the
 launch prompt). Long reports NEVER go on the ticket: put the detail in your
 final response to the orchestrator (or a gist). Comments are notes as you
 go or at the end — never a prerequisite. The DELEGATOR reviews the diff,
