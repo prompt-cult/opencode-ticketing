@@ -371,8 +371,9 @@ WHO DOES WHAT (delegation):
   uuid. It does NOT call get_delegee_rules.
 - The DELEGATEE (subagent) first two calls are READS: ticket get id=N, then
   get_delegee_rules. It NEVER edits the ticket — there is no rewrite action.
-  It needs NO write to start work. It reports via comments (append_comment,
-  its own uuid) and, when done, set_status with the OWNER's uuid.
+  It needs NO write to start work. It reports via short comments
+  (append_comment id=N content=...) and, when done, set_status with the
+  OWNER's uuid.
 - The DELEGATOR reviews the diff, runs the tests, commits.
 
 Mark-complete vs drop: a subagent MARKS its todo item / the ticket done; only
