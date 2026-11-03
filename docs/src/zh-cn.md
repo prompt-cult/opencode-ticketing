@@ -16,7 +16,7 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
   ticket:细节放在 agent 的最终回复里（或 gist）,在 ticket 世界之外。
   delegatee 开始工作不需要任何写入:读 ticket、读规则,然后干活。
 - **只有状态会变** —— todo 镜像自动写它：关闭 todo 项 `N: …` 即关闭
-  ticket N。`set_status` 覆盖其余情况（仅限所有者），包括 `superseded`：
+  ticket N。`ticket_status` 覆盖其余情况（仅限所有者），包括 `superseded`：
   重定范围 = 一次状态变更 + 一条指明继任者的评论。
 - **从不删除。** 没有删除动作。
 
@@ -25,30 +25,36 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 ## 谁做什么（委派）
 
 - **delegator**（提出 ticket 的主 agent）创建它：
-  `ticket add rollout_id=<它的 uuid> todo="..."`（+ 计划作为
-  `md_content`,只写一次）。它拥有 rollout uuid。它**不**调用
-  `get_delegee_rules` —— 规则不是给它的。返回后它审查 diff、跑测试、
+  `ticket_add rollout_id=<它的 session id> todo="..."`（+ 计划作为
+  `md_content`,只写一次）。它拥有 session id。它**不**调用
+  `ticket_rules` —— 规则不是给它的。返回后它审查 diff、跑测试、
   提交。
 - **delegatee**（被启动的 subagent）只拿到 ticket 编号。它的前两个调用
-  都是读取：`ticket get id=N`（完整指令）,然后 `get_delegee_rules`。它
-  **从不编辑 ticket** —— 它以评论报告（`append_comment`,用自己的
-  uuid）,完成时用**所有者的** uuid 调 `set_status`。
+  都是读取：`ticket_get id=N`（完整指令）,然后 `ticket_rules`。它
+  **从不编辑 ticket** —— 它以评论报告（`ticket_comment`）,完成时用
+  **所有者的** session id 调 `ticket_status`。
 - 标记完成 vs. 移除：subagent **标记**其项 / ticket 完成；只有
   **orchestrator** 移除 todo 项。从不删除任何东西。
 
 ## 工具面
 
 ```
-add rollout_id=<session id> todo="…" [md_content=spec]   创建不可变 ticket
-append_comment id=N content="…"                          追加一条简短便签（最多 280）
-set_status id=N rollout_id=<所有者 session id> status=…   唯一的变更
-get id=N                                                 读 ticket + 评论
-list rollout_id=<session id> [status=]                   一个 session 的 tickets（all=true:所有 session 的）
-get_delegee_rules / help                                 delegatee 横幅 / 完整契约
+ticket_add rollout_id=<session id> todo="…" [md_content=spec]   创建不可变 ticket
+ticket_comment id=N content="…"                                 追加一条简短便签（最多 280）
+ticket_status id=N rollout_id=<所有者 session id> status=…       唯一的变更
+ticket_get id=N                                                  读 ticket + 评论
+ticket_list rollout_id=<session id> [status=]                    一个 session 的 tickets（all=true:所有 session 的）
+ticket_rules / ticket_help                                       delegatee 横幅 / 完整契约
 ```
 
 评论是简短的 go/no-go 便签 —— done / not done / blocked。长报告绝不
 上 ticket:放在最终回复里（或 gist）。
+
+一个动作一个工具 —— 没有会被拼错的 action 字符串。每个工具的合法参数
+由 [RFC 8927](https://github.com/prompt-cult/json-type-definition-RFC-8927)
+(JSON Type Definition)schema 定义,并在调用前校验:未知参数、错误类型、
+非法值一律拒绝。每次失败都返回结构化信封
+`{code, message, corrected_call}` —— 原样重发 corrected_call 即可成功。
 
 `rollout_id` 就是 session id —— 只有一个 id。agent **必须知道自己的
 session id**:`add` 和 `list` 默认用它。委派者把工作交给 delegatee 时

@@ -21,7 +21,7 @@ It is never rewritten — there is no rewrite action.
   work.
 - **Status is the only field that ever changes** — and the todo mirror
   writes it automatically: closing the todo item `N: …` closes ticket N.
-  `set_status` covers the rest (owner-gated), including `superseded`:
+  `ticket_status` covers the rest (owner-gated), including `superseded`:
   a re-scope is a status change plus a comment naming the replacement.
 - **Nothing is ever deleted.** There is no delete action.
 
@@ -31,31 +31,38 @@ history.
 ## Who does what (delegation)
 
 - The **delegator** (the main agent) creates the ticket:
-  `ticket add rollout_id=<its uuid> todo="..."` (+ the plan as
-  `md_content`, written once). It owns the rollout uuid. It does **not**
-  call `get_delegee_rules` — the rules are not for it. On return it
+  `ticket_add rollout_id=<its session id> todo="..."` (+ the plan as
+  `md_content`, written once). It owns the session id. It does **not**
+  call `ticket_rules` — the rules are not for it. On return it
   reviews the diff, runs the tests, and commits.
 - The **delegatee** (the launched subagent) is handed ONLY the ticket
-  number. Its first two calls are READS: `ticket get id=N` (its full
-  instructions), then `get_delegee_rules`. It **never edits the ticket** —
-  it reports as comments (`append_comment`, its own uuid) and, when done,
-  `set_status` with the OWNER's uuid.
+  number. Its first two calls are READS: `ticket_get id=N` (its full
+  instructions), then `ticket_rules`. It **never edits the ticket** —
+  it reports as comments (`ticket_comment`, its own session) and, when done,
+  `ticket_status` with the OWNER's session id.
 - Mark-complete vs. drop: a subagent MARKS its item / the ticket done; only
   the **orchestrator** removes todo items. Nothing is ever deleted.
 
 ## The tool surface
 
 ```
-add rollout_id=<session id> todo="…" [md_content=spec]   create the immutable ticket
-append_comment id=N content="…"                          append one SHORT note (280 max)
-set_status id=N rollout_id=<OWNER session id> status=…    the only mutation
-get id=N                                                 read the ticket + comments
-list rollout_id=<session id> [status=]                    one session's tickets (all=true: every session's)
-get_delegee_rules / help                                 the delegatee banner / the contract
+ticket_add rollout_id=<session id> todo="…" [md_content=spec]   create the immutable ticket
+ticket_comment id=N content="…"                                 append one SHORT note (280 max)
+ticket_status id=N rollout_id=<OWNER session id> status=…       the only mutation
+ticket_get id=N                                                  read the ticket + comments
+ticket_list rollout_id=<session id> [status=]                    one session's tickets (all=true: every session's)
+ticket_rules / ticket_help                                       the delegatee banner / the whole contract
 ```
 
 A comment is a short go/no-go note — done / not done / blocked. Long reports
 never go on the ticket: they live in the agent's final response (or a gist).
+
+One tool per action — there is no action string to spell wrongly. Each
+tool's legal parameters are defined by an [RFC 8927](https://github.com/prompt-cult/json-type-definition-RFC-8927)
+(JSON Type Definition) schema and validated before the call runs: unknown
+parameters, wrong types and illegal values are rejected outright. Every
+failure returns a structured envelope `{code, message, corrected_call}` —
+re-emit `corrected_call` verbatim and the call succeeds.
 
 `rollout_id` IS the session id — one id, no other. An agent **must know its
 own session id**: `add` and `list` take it by default. A delegator handing

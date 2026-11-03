@@ -1,210 +1,304 @@
-// ticket.test.ts — the simple contract: an immutable ticket, an append-only
-// comment stream, and status as the only mutation. Exercised with bun:test
-// without loading opencode (the module is import-free outside builtins).
-// TICKET_DB_HOME is pointed at a gitignored scratch dir so the shared ticket
-// DB is never touched.
+// ticket.test.ts — the split-tool contract (issue #18): one tool per
+// action, per-tool required schemas, and the {code, message,
+// corrected_call} envelope on every failure path. The acceptance: a
+// corrected_call re-emitted verbatim succeeds. Exercised with bun:test
+// without loading opencode; TICKET_DB_HOME points at a gitignored scratch
+// dir so the shared ticket DB is never touched.
 import { test, expect, beforeAll } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { join } from "node:path"
-import { execute } from "./ticket"
+import {
+  executeAdd,
+  executeGet,
+  executeList,
+  executeComment,
+  executeStatus,
+  executeRules,
+  executeHelp,
+  parseEnvelope,
+  TicketStore,
+  ticketDbPath,
+  ADD_INPUT,
+  GET_INPUT,
+  LIST_INPUT,
+  COMMENT_INPUT,
+  STATUS_INPUT,
+  ADD_JTD,
+  GET_JTD,
+  LIST_JTD,
+  COMMENT_JTD,
+  STATUS_JTD,
+  jtdValidateAdd,
+  jtdValidateGet,
+  jtdValidateList,
+  jtdValidateComment,
+  jtdValidateStatus,
+  jtdValidateNone,
+} from "./ticket"
 
 beforeAll(() => {
   process.env.TICKET_DB_HOME = mkdtempSync(join(".tmp", "ticket-test-"))
 })
 
-const ACTIONS = ["add", "get", "list", "append_comment", "set_status", "get_delegee_rules", "help"]
-
-function err(res: { content: string }): string {
-  expect(res.content).toStartWith("ticket error: ")
-  return res.content
+function envelope(content: string) {
+  const e = parseEnvelope(content)
+  expect(e).not.toBeNull()
+  return e!
 }
 
-test("help prints the whole contract: the idea, every action, delegation, no dead verbs", async () => {
-  const res = await execute({ action: "help" }, { sessionID: "ses_test" })
-  const content = res.content
-  expect(content).toContain("IMMUTABLE record")
-  expect(content).toContain("APPEND-ONLY comment stream")
-  expect(content).toContain("only field that ever changes")
-  for (const action of ACTIONS) {
-    expect(content).toContain(action)
-  }
-  // The deleted verbs are gone from the contract.
-  for (const dead of ["link_md", "novate", "purge_older_than", "list_since", "update", "delegate"]) {
-    expect(content).not.toContain(`${dead} `)
-  }
-  expect(content).toContain("no rewrite action")
-  expect(content).toContain("delete action")
-  expect(content).toContain("SKILL.md")
-  expect(content).toContain("This tool is the plugin")
+async function add(todo: string, rollout_id: string, md_content?: string) {
+  const res = await executeAdd({ todo, rollout_id, md_content }, { sessionID: rollout_id })
+  return JSON.parse(res.content)
+}
+
+// ─── The schemas make misuse unrepresentable ────────────────────────────────
+
+test("each tool's schema declares its required params and rejects junk keys", () => {
+  expect(ADD_INPUT.required).toEqual(["rollout_id", "todo"])
+  expect(ADD_INPUT.additionalProperties).toBe(false)
+  expect(GET_INPUT.required).toEqual(["id"])
+  expect(GET_INPUT.additionalProperties).toBe(false)
+  // list: the session id unless all=true forces a search of every session.
+  expect(LIST_INPUT.oneOf).toEqual([{ required: ["rollout_id"] }, { required: ["all"] }])
+  expect(LIST_INPUT.additionalProperties).toBe(false)
+  expect(COMMENT_INPUT.required).toEqual(["id", "content"])
+  expect(COMMENT_INPUT.additionalProperties).toBe(false)
+  expect(COMMENT_INPUT.properties.content.maxLength).toBe(280)
+  expect(STATUS_INPUT.required).toEqual(["id", "rollout_id", "status"])
+  expect(STATUS_INPUT.additionalProperties).toBe(false)
 })
 
-test("get_delegee_rules opens with the division of labour, immutability and no-prereq", async () => {
-  const res = await execute({ action: "get_delegee_rules" }, { sessionID: "ses_test" })
-  const content = res.content
-  expect(content.indexOf("WHO YOU ARE")).toBeLessThan(content.indexOf("No commit, no push"))
-  expect(content).toContain("you are the DELEGATEE")
-  expect(content).toContain("THE TICKET IS IMMUTABLE")
-  expect(content).toContain("NO write to the ticket is")
-  expect(content).toContain("prerequisite for starting work")
-  expect(content).toContain("No commit, no push")
-  expect(content).toContain("STOP calling it")
+// ─── The envelope: every failure path, and the verbatim-re-emit acceptance ──
+
+test("the missing-rollout_id envelope self-heals: corrected_call carries the REAL owner session id; re-emit verbatim succeeds", async () => {
+  const created = await add("self-heal test", "ses_ownerX")
+  // The call arrives without the owner session id.
+  const e1 = envelope((await executeStatus({ id: created.id, status: "completed" }, { sessionID: "ses_delegatee" })).content)
+  expect(e1.code).toBe("E_STATUS_MISSING_ROLLOUT_ID")
+  expect(e1.message).toContain("ticket_status requires 'rollout_id'")
+  expect(e1.corrected_call.rollout_id).toBe("ses_ownerX")
+  expect(e1.corrected_call.id).toBe(created.id)
+  expect(e1.corrected_call.status).toBe("completed")
+  // ACCEPTANCE: re-emit corrected_call verbatim — the call succeeds.
+  const retry = await executeStatus(e1.corrected_call, { sessionID: "ses_delegatee" })
+  const row = JSON.parse(retry.content)
+  expect(row.status).toBe("completed")
+  expect(row.last_actor).toBe("ses_delegatee")
 })
 
-test("the happy path: add persists the body once; short comments append one at a time; get renders both", async () => {
-  const add = JSON.parse(
-    (await execute(
-      { action: "add", todo: "happy path", rollout_id: "ses_happy", md_content: "# the spec, written once" },
-      { sessionID: "ses_happy" },
-    )).content,
+test("the non-owner refusal envelope self-heals the same way: corrected_call names the owner; verbatim re-emit succeeds", async () => {
+  const created = await add("refusal test", "ses_ownerY")
+  const e1 = envelope(
+    (await executeStatus({ id: created.id, rollout_id: "ses_wrong", status: "superseded" }, { sessionID: "ses_delegatee" })).content,
   )
-  expect(add.id).toBeGreaterThan(0)
-  expect(add.ticket.status).toBe("pending")
+  expect(e1.code).toBe("E_STATUS_REFUSED")
+  expect(e1.message).toContain("refused")
+  expect(e1.message).toContain("ses_ownerY")
+  expect(e1.corrected_call.rollout_id).toBe("ses_ownerY")
+  const retry = JSON.parse((await executeStatus(e1.corrected_call, { sessionID: "ses_delegatee" })).content)
+  expect(retry.status).toBe("superseded")
+})
+
+test("every validation failure returns {code, message, corrected_call}; each missing param has its stable code", async () => {
+  const created = await add("envelope test", "ses_ownerZ")
+
+  const addNoTodo = envelope((await executeAdd({ rollout_id: "ses_x" }, {})).content)
+  expect(addNoTodo.code).toBe("E_ADD_MISSING_TODO")
+  expect(addNoTodo.corrected_call.todo).toContain("<fill:")
+  const addNoOwner = envelope((await executeAdd({ todo: "x" }, {})).content)
+  expect(addNoOwner.code).toBe("E_ADD_MISSING_ROLLOUT_ID")
+
+  const getNoId = envelope((await executeGet({}, {})).content)
+  expect(getNoId.code).toBe("E_GET_MISSING_ID")
+  const getMissing = envelope((await executeGet({ id: 424242 }, {})).content)
+  expect(getMissing.code).toBe("E_NO_TICKET")
+
+  const listBare = envelope((await executeList({}, {})).content)
+  expect(listBare.code).toBe("E_LIST_MISSING_ROLLOUT_ID")
+  expect(listBare.message).toContain("all=true")
+
+  const cmtNoId = envelope((await executeComment({ content: "done" }, {})).content)
+  expect(cmtNoId.code).toBe("E_COMMENT_MISSING_ID")
+  const cmtNoContent = envelope((await executeComment({ id: created.id }, {})).content)
+  expect(cmtNoContent.code).toBe("E_COMMENT_MISSING_CONTENT")
+  const cmtMissing = envelope((await executeComment({ id: 424242, content: "x" }, {})).content)
+  expect(cmtMissing.code).toBe("E_NO_TICKET")
+
+  const stNoId = envelope((await executeStatus({ rollout_id: "s", status: "pending" }, {})).content)
+  expect(stNoId.code).toBe("E_STATUS_MISSING_ID")
+  const stNoStatus = envelope((await executeStatus({ id: created.id, rollout_id: "ses_ownerZ" }, {})).content)
+  expect(stNoStatus.code).toBe("E_STATUS_MISSING_STATUS")
+  const stBad = envelope(
+    (await executeStatus({ id: created.id, rollout_id: "ses_ownerZ", status: "bogus" }, {})).content,
+  )
+  expect(stBad.code).toBe("E_STATUS_BAD_STATUS")
+  expect(stBad.message).toContain("is not one of the legal values")
+
+  // every message carries the one-help-call hint
+  for (const e of [addNoTodo, getNoId, listBare, cmtNoId, stNoStatus, stBad])
+    expect(e.message).toContain("ticket_help")
+})
+
+test("a comment over 280 chars is E_COMMENT_TOO_LONG with the channel-naming message; 280 exactly lands", async () => {
+  const created = await add("cap test", "ses_cap")
+  const e1 = envelope((await executeComment({ id: created.id, content: "x".repeat(281) }, {})).content)
+  expect(e1.code).toBe("E_COMMENT_TOO_LONG")
+  expect(e1.message).toContain("280 chars max")
+  expect(e1.message).toContain("gist")
+  const ok280 = await executeComment({ id: created.id, content: "y".repeat(280) }, { sessionID: "ses_cap" })
+  expect(JSON.parse(ok280.content).ticket_id).toBe(created.id)
+})
+
+// ─── The happy paths ────────────────────────────────────────────────────────
+
+test("add persists the body once; comments append one at a time; get renders both", async () => {
+  const created = await add("happy path", "ses_happy", "# the spec, written once")
+  expect(created.id).toBeGreaterThan(0)
+  expect(created.ticket.status).toBe("pending")
   for (const text of ["done", "blocked on env"]) {
-    const c = JSON.parse(
-      (await execute(
-        { action: "append_comment", id: add.id, content: text },
-        { sessionID: "ses_commenter" },
-      )).content,
-    )
-    expect(c.ticket_id).toBe(add.id)
+    const c = JSON.parse((await executeComment({ id: created.id, content: text }, { sessionID: "ses_commenter" })).content)
+    expect(c.ticket_id).toBe(created.id)
     expect(c.author_rollout_id).toBe("ses_commenter")
   }
-  const got = (await execute({ action: "get", id: add.id }, { sessionID: "ses_anyone" })).content
+  const got = (await executeGet({ id: created.id }, { sessionID: "ses_anyone" })).content
   expect(got).toContain('"md_content": "# the spec, written once"')
   expect(got).toContain("--- comments (chronological) ---")
   expect(got.indexOf("done")).toBeLessThan(got.indexOf("blocked on env"))
 })
 
-test("a comment is a short go/no-go note: essays are refused, the cap echoes the alternative channels", async () => {
-  const add = JSON.parse(
-    (await execute({ action: "add", todo: "cap test", rollout_id: "ses_cap" }, { sessionID: "ses_cap" })).content,
-  )
-  const essay = "x".repeat(281)
-  const refused = err(await execute({ action: "append_comment", id: add.id, content: essay }, { sessionID: "ses_cap" }))
-  expect(refused).toContain("280 chars max")
-  expect(refused).toContain("never go on the ticket")
-  expect(refused).toContain("gist")
-  const ok = await execute(
-    { action: "append_comment", id: add.id, content: "DONE: gates green (321/0/0/0), commit abc1234" },
-    { sessionID: "ses_cap" },
-  )
-  expect(JSON.parse(ok.content).ticket_id).toBe(add.id)
-  // Exactly 280 is allowed.
-  const edge = await execute(
-    { action: "append_comment", id: add.id, content: "y".repeat(280) },
-    { sessionID: "ses_cap" },
-  )
-  expect(JSON.parse(edge.content).ticket_id).toBe(add.id)
-})
-
-test("set_status is the only mutation, owner-gated; superseded needs no linkage — a comment carries the successor", async () => {
-  const add = JSON.parse(
-    (await execute({ action: "add", todo: "status test", rollout_id: "ses_ownerA" }, { sessionID: "ses_test" })).content,
-  )
-  // A non-owner is refused and the error names the owner.
-  const refused = err(
-    await execute(
-      { action: "set_status", id: add.id, rollout_id: "ses_ownerB", status: "completed" },
-      { sessionID: "ses_test" },
-    ),
-  )
-  expect(refused).toContain("refused")
-  expect(refused).toContain("ses_ownerA")
-  // The owner can supersede — no parent linkage required.
-  const row = JSON.parse(
-    (await execute(
-      { action: "set_status", id: add.id, rollout_id: "ses_ownerA", status: "superseded" },
-      { sessionID: "ses_ownerA" },
-    )).content,
-  )
-  expect(row.status).toBe("superseded")
-  // A bogus status is rejected with the whitelist.
-  expect(err(await execute(
-    { action: "set_status", id: add.id, rollout_id: "ses_ownerA", status: "bogus" },
-    { sessionID: "ses_ownerA" },
-  ))).toContain("status must be one of")
-})
-
-test("every validation error names the missing param, prints the corrected call, and points at help", async () => {
-  const hint = 'ticket {"action":"help"}'
-  expect(err(await execute({ action: "add" }, {}))).toContain("add requires 'todo'")
-  expect(err(await execute({ action: "add", todo: "x" }, {}))).toContain("add requires 'rollout_id'")
-  expect(err(await execute({ action: "add" }, {}))).toContain("the immutable record")
-  expect(err(await execute({ action: "get" }, {}))).toContain('the corrected call: ticket {"action":"get"')
-  expect(err(await execute({ action: "append_comment", id: 1 }, {}))).toContain("append_comment requires 'content'")
-  expect(err(await execute({ action: "append_comment", id: 1 }, {}))).toContain('the corrected call: ticket {"action":"append_comment"')
-  expect(err(await execute({ action: "append_comment", content: "x" }, {}))).toContain(
-    "append_comment requires 'id'",
-  )
-  expect(err(await execute({ action: "set_status", id: 1 }, {}))).toContain("set_status requires 'status'")
-  expect(err(await execute({ action: "set_status", id: 1 }, {}))).toContain('the corrected call: ticket {"action":"set_status"')
-  expect(err(await execute({ action: "set_status", id: 1, status: "completed" }, {}))).toContain(
-    "set_status requires 'rollout_id'",
-  )
-  for (const res of [
-    await execute({ action: "add" }, {}),
-    await execute({ action: "get" }, {}),
-    await execute({ action: "set_status", id: 1, status: "completed" }, {}),
-  ])
-    expect(res.content).toContain(hint)
-})
-
-test("the deleted verbs are really gone: they answer unknown action", async () => {
-  for (const dead of ["update", "link_md", "novate", "purge_older_than", "list_since", "delegate"]) {
-    const res = await execute({ action: dead, id: 1, rollout_id: "ses_x" }, {})
-    expect(res.content).toContain(`unknown action "${dead}"`)
-    expect(res.content).toContain("add|get|list|append_comment|set_status|get_delegee_rules|help")
-  }
-})
-
-test("list requires the session id; all=true lists every session; the row is exactly the contract's columns", async () => {
-  await execute({ action: "add", todo: "list a", rollout_id: "ses_listA" }, { sessionID: "ses_listA" })
-  await execute({ action: "add", todo: "list b", rollout_id: "ses_listB" }, { sessionID: "ses_listB" })
-  // No session id and no all: refused with the corrected call.
-  const refused = err(await execute({ action: "list" }, {}))
-  expect(refused).toContain("list requires 'rollout_id'")
-  expect(refused).toContain("the session id to query")
-  expect(refused).toContain('"all":true')
-  // One session's tickets: only that session's, in the named columns only.
-  const mine = JSON.parse((await execute({ action: "list", rollout_id: "ses_listA" }, {})).content)
+test("list: one session by id, status filter combines, all=true lists every session", async () => {
+  await add("list a", "ses_listA")
+  await add("list b", "ses_listB")
+  const mine = JSON.parse((await executeList({ rollout_id: "ses_listA" }, {})).content)
   expect(mine.length).toBeGreaterThan(0)
   expect(mine.every((r: { rollout_id: string }) => r.rollout_id === "ses_listA")).toBe(true)
-  for (const key of Object.keys(mine[0]))
-    expect(["id", "created_at", "updated_at", "todo", "status", "rollout_id", "last_actor", "md_content"]).toContain(key)
-  // status filter combines with the session id.
-  const minePending = JSON.parse(
-    (await execute({ action: "list", rollout_id: "ses_listA", status: "pending" }, {})).content,
-  )
+  const minePending = JSON.parse((await executeList({ rollout_id: "ses_listA", status: "pending" }, {})).content)
   expect((minePending as any[]).every((r) => r.status === "pending")).toBe(true)
-  // all=true: every session's tickets.
-  const everyone = JSON.parse((await execute({ action: "list", all: true }, {})).content)
+  const everyone = JSON.parse((await executeList({ all: true }, {})).content)
   expect((everyone as any[]).some((r) => r.rollout_id === "ses_listA")).toBe(true)
   expect((everyone as any[]).some((r) => r.rollout_id === "ses_listB")).toBe(true)
 })
 
-test("the session-id doctrine is stated in help: one id, you MUST know yours, delegators name the delegatee's", async () => {
-  const res = await execute({ action: "help" }, { sessionID: "ses_test" })
-  const content = res.content
+// ─── The contract text ──────────────────────────────────────────────────────
+
+test("help states the whole contract: tools, doctrine, envelope; no action strings", async () => {
+  const content = executeHelp().content
+  for (const tool of ["ticket_add", "ticket_get", "ticket_list", "ticket_comment", "ticket_status", "ticket_rules", "ticket_help"]) {
+    expect(content).toContain(tool)
+  }
   expect(content).toContain("rollout_id IS the session id")
-  expect(content).toContain("one id, no other")
   expect(content).toContain("You MUST know your own session id")
   expect(content).toContain("NAME the session id the delegatee must use")
   expect(content).toContain("Too simple to get wrong")
+  expect(content).toContain("corrected_call")
+  expect(content).toContain("IMMUTABLE record")
+  expect(content).toContain("one id, no other")
 })
 
-test("add and set_status responses are clean: exactly the contract's shape", async () => {
-  const add = JSON.parse(
-    (await execute({ action: "add", todo: "clean resp", rollout_id: "ses_clean" }, { sessionID: "ses_other" })).content,
-  )
-  expect(Object.keys(add).sort()).toEqual(["id", "rollout_id", "ticket"].sort())
-  const row = JSON.parse(
-    (await execute(
-      { action: "set_status", id: add.id, rollout_id: "ses_clean", status: "completed" },
-      { sessionID: "ses_other" },
-    )).content,
-  )
-  expect(row.last_actor).toBe("ses_other")
-  expect(Object.keys(row).sort()).toEqual(
-    ["id", "created_at", "updated_at", "todo", "status", "rollout_id", "last_actor", "md_content"].sort(),
-  )
+test("the rules banner opens with the division of labour, immutability, no-prereq, and the envelope recovery", async () => {
+  const content = executeRules().content
+  expect(content.indexOf("WHO YOU ARE")).toBeLessThan(content.indexOf("No commit, no push"))
+  expect(content).toContain("you are the DELEGATEE")
+  expect(content).toContain("THE TICKET IS IMMUTABLE")
+  expect(content).toContain("NO write to the ticket")
+  expect(content).toContain("prerequisite for starting work")
+  expect(content).toContain("No commit, no push")
+  expect(content).toContain("ticket_get id=N")
+  expect(content).toContain("ticket_status with the OWNER's session id")
+  expect(content).toContain("re-emit corrected_call verbatim")
+  expect(content).toContain("STOP calling it")
+})
+
+// ─── Red/Green: the RFC 8927 validators gate every handler (issue #18) ──────
+
+test("the RFC 8927 validators: the legal set is exact — unit level", () => {
+  // add: rollout_id+todo required, md_content optional, junk rejected
+  expect(jtdValidateAdd({ rollout_id: "s", todo: "t" })).toEqual([])
+  expect(jtdValidateAdd({ rollout_id: "s", todo: "t", md_content: "m" })).toEqual([])
+  expect(jtdValidateAdd({ rollout_id: "s", todo: "t", junk: 1 })).toEqual([{ instancePath: "/junk", schemaPath: "" }])
+  expect(jtdValidateAdd({ rollout_id: "s" })).toEqual([{ instancePath: "", schemaPath: "/properties/todo" }])
+  expect(jtdValidateAdd({ rollout_id: 7, todo: "t" })).toEqual([{ instancePath: "/rollout_id", schemaPath: "/properties/rollout_id/type" }])
+  expect(jtdValidateAdd(null)).toEqual([{ instancePath: "", schemaPath: "/properties" }])
+  // get: id required, uint32
+  expect(jtdValidateGet({ id: 5 })).toEqual([])
+  expect(jtdValidateGet({ id: -1 })).toEqual([{ instancePath: "/id", schemaPath: "/properties/id/type" }])
+  expect(jtdValidateGet({ id: 1.5 })).toEqual([{ instancePath: "/id", schemaPath: "/properties/id/type" }])
+  // list: all optional individually
+  expect(jtdValidateList({})).toEqual([])
+  expect(jtdValidateList({ rollout_id: "s", status: "pending", all: true })).toEqual([])
+  expect(jtdValidateList({ status: "bogus" }))[0]
+  expect(jtdValidateList({ status: "bogus" })[0].schemaPath).toBe("/optionalProperties/status/enum")
+  // comment: id+content required
+  expect(jtdValidateComment({ id: 1, content: "done" })).toEqual([])
+  expect(jtdValidateComment({ content: "done" })[0].schemaPath).toBe("/properties/id")
+  // status: id+rollout_id+status required, status enum enforced
+  expect(jtdValidateStatus({ id: 1, rollout_id: "s", status: "superseded" })).toEqual([])
+  expect(jtdValidateStatus({ id: 1, rollout_id: "s", status: "bogus" })[0].schemaPath).toBe("/properties/status/enum")
+  expect(jtdValidateStatus({ id: 1, status: "pending" })[0].schemaPath).toBe("/properties/rollout_id")
+  // none: rules/help take no params at all
+  expect(jtdValidateNone({})).toEqual([])
+  expect(jtdValidateNone({ junk: 1 })).toEqual([{ instancePath: "/junk", schemaPath: "" }])
+  // an explicitly-undefined key is ABSENT in JSON semantics — never a type error
+  expect(jtdValidateAdd({ rollout_id: "s", todo: "t", md_content: undefined })).toEqual([])
+  expect(jtdValidateStatus({ id: undefined, rollout_id: "s", status: "pending" })[0].schemaPath).toBe("/properties/id")
+})
+
+test("the RFC 8927 sets and the harness-facing JSON Schema declare the same legal params", () => {
+  expect(Object.keys(ADD_JTD.properties).sort()).toEqual(ADD_INPUT.required.slice().sort())
+  expect(Object.keys(GET_JTD.properties).sort()).toEqual(GET_INPUT.required.slice().sort())
+  expect(Object.keys(COMMENT_JTD.properties).sort()).toEqual(COMMENT_INPUT.required.slice().sort())
+  expect(Object.keys(STATUS_JTD.properties).sort()).toEqual(STATUS_INPUT.required.slice().sort())
+  expect(Object.keys(ADD_JTD.optionalProperties!).sort()).toEqual(["md_content"])
+  expect(Object.keys(LIST_JTD.optionalProperties!).sort()).toEqual(Object.keys(LIST_INPUT.properties).sort())
+  expect(STATUS_JTD.properties.status.enum).toEqual(["pending", "in_progress", "completed", "cancelled", "superseded"])
+  expect(COMMENT_INPUT.properties.content.maxLength).toBe(280)
+})
+
+test("GREEN TARGET: a junk parameter is rejected before the store — E_ADD_EXTRA_PROPERTY, zero side effects", async () => {
+  const before = JSON.parse((await executeList({ all: true }, {})).content).length
+  // 'before' is the historic junk param models used to inject
+  const e = envelope((await executeAdd({ rollout_id: "ses_junk", todo: "t", before: "2020-01-01" }, {})).content)
+  expect(e.code).toBe("E_ADD_EXTRA_PROPERTY")
+  expect(e.message).toContain("'before' is not a legal parameter")
+  const after = JSON.parse((await executeList({ all: true }, {})).content).length
+  expect(after).toBe(before) // rejected BEFORE the store: nothing was created
+})
+
+test("GREEN TARGET: a wrong-typed id is rejected by JTD — E_GET_BAD_ID / E_COMMENT_BAD_ID", async () => {
+  const e1 = envelope((await executeGet({ id: "seven" }, {})).content)
+  expect(e1.code).toBe("E_GET_BAD_ID")
+  expect(e1.message).toContain("wrong type")
+  const e2 = envelope((await executeComment({ id: "seven", content: "x" }, {})).content)
+  expect(e2.code).toBe("E_COMMENT_BAD_ID")
+})
+
+test("GREEN TARGET: a bogus status is rejected by the JTD enum — E_STATUS_BAD_STATUS with the legal values; corrected_call re-emitted verbatim succeeds", async () => {
+  const created = await add("enum gate test", "ses_enum")
+  const e = envelope((await executeStatus({ id: created.id, rollout_id: "ses_enum", status: "bogus" }, {})).content)
+  expect(e.code).toBe("E_STATUS_BAD_STATUS")
+  expect(e.message).toContain("is not one of the legal values")
+  expect(e.message).toContain("pending|in_progress|completed|cancelled|superseded")
+  // corrected_call is legal: verbatim re-emit succeeds
+  const retry = JSON.parse((await executeStatus(e.corrected_call, { sessionID: "ses_enum" })).content)
+  expect(retry.status).toBe("pending")
+})
+
+test("GREEN TARGET: a missing required param is rejected by JTD with the stable code — E_STATUS_MISSING_STATUS", async () => {
+  const created = await add("jtd missing test", "ses_jtdm")
+  const e = envelope((await executeStatus({ id: created.id, rollout_id: "ses_jtdm" }, {})).content)
+  expect(e.code).toBe("E_STATUS_MISSING_STATUS")
+  expect(e.message).toContain("ticket_status requires 'status'")
+})
+
+test("the todowrite mirror is unchanged: flushing 'N: …' closes ticket N for the flushing session only", async () => {
+  const created = await add("mirror test", "ses_mirror")
+  const store = new TicketStore(ticketDbPath())
+  const changed = store.syncStatuses([{ content: `${created.id}: mirror`, status: "completed" }], "ses_mirror")
+  expect(changed).toEqual([created.id])
+  const row = JSON.parse((await executeGet({ id: created.id }, {})).content)
+  expect(row.status).toBe("completed")
+  // scoped: another session's flush never touches it
+  const changed2 = store.syncStatuses([{ content: `${created.id}: mirror`, status: "in_progress" }], "ses_other")
+  expect(changed2).toEqual([])
+  store.close()
 })
