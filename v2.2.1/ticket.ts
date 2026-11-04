@@ -778,13 +778,13 @@ export async function executeStatus(args: any, context: any): Promise<{ content:
   }
 }
 
-export function executeRules(args: any = {}): { content: string } {
+export async function executeRules(args: any = {}): Promise<{ content: string }> {
   const jtd = jtdValidateNone(args)
   if (jtd.length) return jtdFail("RULES", jtd, {})
   return { content: rulesText() }
 }
 
-export function executeHelp(args: any = {}): { content: string } {
+export async function executeHelp(args: any = {}): Promise<{ content: string }> {
   const jtd = jtdValidateNone(args)
   if (jtd.length) return jtdFail("HELP", jtd, {})
   return { content: helpText() }

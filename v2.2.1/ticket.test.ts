@@ -182,7 +182,7 @@ test("list: one session by id, status filter combines, all=true lists every sess
 // ─── The contract text ──────────────────────────────────────────────────────
 
 test("help states the whole contract: tools, doctrine, envelope; no action strings", async () => {
-  const content = executeHelp().content
+  const content = (await executeHelp()).content
   for (const tool of ["ticket_add", "ticket_get", "ticket_list", "ticket_comment", "ticket_status", "ticket_rules", "ticket_help"]) {
     expect(content).toContain(tool)
   }
@@ -196,7 +196,7 @@ test("help states the whole contract: tools, doctrine, envelope; no action strin
 })
 
 test("the rules banner opens with the division of labour, immutability, no-prereq, and the envelope recovery", async () => {
-  const content = executeRules().content
+  const content = (await executeRules()).content
   expect(content.indexOf("WHO YOU ARE")).toBeLessThan(content.indexOf("No commit, no push"))
   expect(content).toContain("you are the DELEGATEE")
   expect(content).toContain("THE TICKET IS IMMUTABLE")
