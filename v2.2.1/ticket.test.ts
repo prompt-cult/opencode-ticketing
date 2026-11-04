@@ -63,7 +63,7 @@ test("each tool's schema declares its required params and rejects junk keys", ()
   expect(LIST_INPUT.additionalProperties).toBe(false)
   expect(COMMENT_INPUT.required).toEqual(["id", "content"])
   expect(COMMENT_INPUT.additionalProperties).toBe(false)
-  expect(COMMENT_INPUT.properties.content.maxLength).toBe(280)
+  expect(COMMENT_INPUT.properties.content.maxLength).toBe(1000)
   expect(STATUS_INPUT.required).toEqual(["id", "rollout_id", "status"])
   expect(STATUS_INPUT.additionalProperties).toBe(false)
 })
@@ -139,14 +139,14 @@ test("every validation failure returns {code, message, corrected_call}; each mis
     expect(e.message).toContain("ticket_help")
 })
 
-test("a comment over 280 chars is E_COMMENT_TOO_LONG with the channel-naming message; 280 exactly lands", async () => {
+test("a comment over 1000 chars is E_COMMENT_TOO_LONG with the channel-naming message; 1000 exactly lands", async () => {
   const created = await add("cap test", "ses_cap")
-  const e1 = envelope((await executeComment({ id: created.id, content: "x".repeat(281) }, {})).content)
+  const e1 = envelope((await executeComment({ id: created.id, content: "x".repeat(1001) }, {})).content)
   expect(e1.code).toBe("E_COMMENT_TOO_LONG")
-  expect(e1.message).toContain("280 chars max")
+  expect(e1.message).toContain("1000 chars max")
   expect(e1.message).toContain("gist")
-  const ok280 = await executeComment({ id: created.id, content: "y".repeat(280) }, { sessionID: "ses_cap" })
-  expect(JSON.parse(ok280.content).ticket_id).toBe(created.id)
+  const ok1000 = await executeComment({ id: created.id, content: "y".repeat(1000) }, { sessionID: "ses_cap" })
+  expect(JSON.parse(ok1000.content).ticket_id).toBe(created.id)
 })
 
 // ─── The happy paths ────────────────────────────────────────────────────────
@@ -251,7 +251,7 @@ test("the RFC 8927 sets and the harness-facing JSON Schema declare the same lega
   expect(Object.keys(ADD_JTD.optionalProperties!).sort()).toEqual(["md_content"])
   expect(Object.keys(LIST_JTD.optionalProperties!).sort()).toEqual(Object.keys(LIST_INPUT.properties).sort())
   expect(STATUS_JTD.properties.status.enum).toEqual(["pending", "in_progress", "completed", "cancelled", "superseded"])
-  expect(COMMENT_INPUT.properties.content.maxLength).toBe(280)
+  expect(COMMENT_INPUT.properties.content.maxLength).toBe(1000)
 })
 
 test("GREEN TARGET: a junk parameter is rejected before the store — E_ADD_EXTRA_PROPERTY, zero side effects", async () => {

@@ -510,8 +510,8 @@ export const COMMENT_INPUT = {
     id: { type: "number", description: "ticket number" },
     content: {
       type: "string",
-      maxLength: 280,
-      description: "short go/no-go note: done / not done / blocked — 280 chars max",
+      maxLength: 1000,
+      description: "short go/no-go note: done / not done / blocked — 1000 chars max",
     },
   },
   required: ["id", "content"],
@@ -545,7 +545,7 @@ must know which session it is querying); status filters; all=true lists
 every session's tickets instead.`
 
 const COMMENT_DESC = `Append ONE comment to a ticket: a short go/no-go note — done / not done /
-blocked — 280 chars max. Long reports NEVER go on the ticket (final response
+blocked — 1000 chars max. Long reports NEVER go on the ticket (final response
 or a gist). Any session may append; the author is your session, stamped
 automatically. No session id needed — access is by ticket number.`
 
@@ -580,7 +580,7 @@ string to spell wrongly; each tool's schema declares its required params:
   tickets; all=true -> every session's. The session id is required — an
   agent must know which session it is querying.
 - ticket_comment id=N content="..." -> the ONLY write after creation: a
-  SHORT go/no-go note — done / not done / blocked — 280 chars max. Long
+  SHORT go/no-go note — done / not done / blocked — 1000 chars max. Long
   reports NEVER go on the ticket: detail lives in your final response (or a
   gist). Any session may append (the author is your session, stamped
   automatically).
@@ -632,7 +632,7 @@ now). THE TICKET IS IMMUTABLE: the body was written once by the delegator
 before your launch — there is no rewrite action, and NO write to the ticket
 is a prerequisite for starting work: read the ticket, read these rules, then
 DO THE WORK. Your only writes are ticket_comment notes — SHORT go/no-go:
-done / not done / blocked, 280 chars max — and, when the work is done,
+done / not done / blocked, 1000 chars max — and, when the work is done,
 ticket_status with the OWNER's session id — your launch prompt NAMES it; use
 it. Long reports NEVER go on the ticket: put the detail in your final
 response to the orchestrator (or a gist). The DELEGATOR reviews the diff,
@@ -725,10 +725,10 @@ export async function executeComment(args: any, context: any): Promise<{ content
   const jtd = jtdValidateComment(args)
   if (jtd.length) return jtdFail("COMMENT", jtd, corrected)
   if (!args.content) return fail("E_COMMENT_MISSING_CONTENT", "ticket_comment requires 'content' — a short go/no-go note", corrected)
-  if (String(args.content).length > 280)
+  if (String(args.content).length > 1000)
     return fail(
       "E_COMMENT_TOO_LONG",
-      "a comment is a short go/no-go note — done / not done / blocked (280 chars max). Long reports never go on the ticket: put the detail in your final response (or a gist)",
+      "a comment is a short go/no-go note — done / not done / blocked (1000 chars max). Long reports never go on the ticket: put the detail in your final response (or a gist)",
       { id: args.id, content: "<fill: short note>" },
     )
   try {

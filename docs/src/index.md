@@ -14,7 +14,7 @@ A ticket's body (`md_content`) is **the spec, written once** at creation.
 It is never rewritten — there is no rewrite action.
 
 - **Everything after creation is a comment — and a comment is a SHORT
-  go/no-go note**: done / not done / blocked, 280 chars max, one at a
+  go/no-go note**: done / not done / blocked, 1000 chars max, one at a
   time. Long reports NEVER go on the ticket: detail lives in the agent's
   final response (or a gist), outside the ticket world. A delegatee
   needs NO write to start: read the ticket, read the rules, then do the
@@ -47,7 +47,7 @@ history.
 
 ```
 ticket_add rollout_id=<session id> todo="…" [md_content=spec]   create the immutable ticket
-ticket_comment id=N content="…"                                 append one SHORT note (280 max)
+ticket_comment id=N content="…"                                 append one SHORT note (1000 max)
 ticket_status id=N rollout_id=<OWNER session id> status=…       the only mutation
 ticket_get id=N                                                  read the ticket + comments
 ticket_list rollout_id=<session id> [status=]                    one session's tickets (all=true: every session's)
