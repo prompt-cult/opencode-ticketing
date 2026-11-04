@@ -12,7 +12,7 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 没有重写动作。
 
 - **创建之后的一切都是评论 —— 评论是简短的 go/no-go 便签**：
-  done / not done / blocked,最多 280 字符,一次一条。长报告**绝不**上
+  done / not done / blocked,最多 1000 字符,一次一条。长报告**绝不**上
   ticket:细节放在 agent 的最终回复里（或 gist）,在 ticket 世界之外。
   delegatee 开始工作不需要任何写入:读 ticket、读规则,然后干活。
 - **只有状态会变** —— todo 镜像自动写它：关闭 todo 项 `N: …` 即关闭
@@ -40,7 +40,7 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 
 ```
 ticket_add rollout_id=<session id> todo="…" [md_content=spec]   创建不可变 ticket
-ticket_comment id=N content="…"                                 追加一条简短便签（最多 280）
+ticket_comment id=N content="…"                                 追加一条简短便签（最多 1000）
 ticket_status id=N rollout_id=<所有者 session id> status=…       唯一的变更
 ticket_get id=N                                                  读 ticket + 评论
 ticket_list rollout_id=<session id> [status=]                    一个 session 的 tickets（all=true:所有 session 的）

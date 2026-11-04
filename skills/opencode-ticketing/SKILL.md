@@ -20,7 +20,7 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
    list. Front-jump only when the user says "do it next" or gives an
    explicit order. Closing the item closes ticket N automatically.
 3. Everything after creation is a comment — and a comment is a SHORT
-   go/no-go note: done / not done / blocked, 280 chars max:
+   go/no-go note: done / not done / blocked, 1000 chars max:
    `ticket_comment id=N content="..."`. Long reports NEVER go on the
    ticket: detail lives in the agent's final response (or a gist). One
    comment at a time.
@@ -64,7 +64,7 @@ rules. The tool is the single source of truth for delegee rules.
 - `list` requires the session id to query (`list rollout_id=<session id>
   [status=…]`); `all=true` lists every session's. An agent must know which
   session it is querying.
-- Comments are short go/no-go notes (done / not done / blocked, 280 chars
+- Comments are short go/no-go notes (done / not done / blocked, 1000 chars
   max) — never essays. Long reports live in the agent's final response
   (or a gist), never on the ticket. Any session may append (the author is
   the calling session, stamped automatically); only the owner may change
