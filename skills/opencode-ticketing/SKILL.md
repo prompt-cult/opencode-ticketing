@@ -38,7 +38,7 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
    every rule it returns. NO write to the ticket is a prerequisite for
    starting work: read, then work; comments are reports, never setup. It
    never edits the ticket. It returns a report — it does NOT commit,
-   push, open PRs, watch/poll CI.
+   branch, push, open PRs, watch/poll CI.
 3. Orchestrator, on return: marks the todo done + ticket complete
    (burndown, never delete), then re-runs the gate itself.
    - **Green** → orchestrator commits (and may push).
