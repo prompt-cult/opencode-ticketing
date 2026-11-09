@@ -89,6 +89,11 @@ override): one database in the config tree, every repo points at it.
   `ticket.ts` inlines the TicketStore, no `lib/` import; `todo-protocol.ts`
   rewrites the `todowrite` description to the flush/deque protocol).
 
+Releases are tagged `v<opencode-version>-<short-commit-sha>` (for example
+`v2.2.5-abc1234`), mirroring the opencode version the plugin was tested
+against plus this repo's commit hash. This release was tested against
+**opencode v2.2.5** (issue #22 verified live on the Beam endpoint).
+
 Install centrally (`~/.config/opencode/plugin/`) and opencode auto-discovers
 the plugins in every session. Do not keep copies in a repo's
 `.opencode/plugin/` as well: opencode loads both, and the supervisor
