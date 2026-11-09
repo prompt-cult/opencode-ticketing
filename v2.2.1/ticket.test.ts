@@ -58,8 +58,13 @@ test("each tool's schema declares its required params and rejects junk keys", ()
   expect(ADD_INPUT.additionalProperties).toBe(false)
   expect(GET_INPUT.required).toEqual(["id"])
   expect(GET_INPUT.additionalProperties).toBe(false)
-  // list: the session id unless all=true forces a search of every session.
-  expect(LIST_INPUT.oneOf).toEqual([{ required: ["rollout_id"] }, { required: ["all"] }])
+  // list: all three properties optional in the schema — a top-level oneOf
+  // breaks strict upstreams (issue #22), so the "rollout_id or all" rule is
+  // enforced by executeList at runtime, not by the exposed schema.
+  expect(LIST_INPUT.type).toBe("object")
+  for (const kw of ["oneOf", "anyOf", "allOf", "enum", "const", "not"] as const)
+    expect(LIST_INPUT[kw]).toBeUndefined()
+  expect(LIST_INPUT.required).toBeUndefined()
   expect(LIST_INPUT.additionalProperties).toBe(false)
   expect(COMMENT_INPUT.required).toEqual(["id", "content"])
   expect(COMMENT_INPUT.additionalProperties).toBe(false)

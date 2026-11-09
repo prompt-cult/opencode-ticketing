@@ -492,15 +492,19 @@ export const GET_INPUT = {
   required: ["id"],
 }
 
+// No top-level oneOf/anyOf/allOf here: a strict upstream (the Beam endpoint)
+// rejects any function schema whose top level is not a plain object — it fails
+// the whole session with invalid_function_parameters (issue #22). The XOR
+// (rollout_id or all) is enforced at runtime by executeList instead, where the
+// rejection is a self-healing envelope rather than a dead session.
 export const LIST_INPUT = {
   type: "object",
   additionalProperties: false,
   properties: {
-    rollout_id: { type: "string", description: "the session id to query" },
+    rollout_id: { type: "string", description: "the session id to query (required unless all=true)" },
     status: { type: "string", description: "pending | in_progress | completed | cancelled | superseded (filter)" },
     all: { type: "boolean", description: "list every session's tickets (instead of one session's)" },
   },
-  oneOf: [{ required: ["rollout_id"] }, { required: ["all"] }],
 }
 
 export const COMMENT_INPUT = {
