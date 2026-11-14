@@ -10,9 +10,10 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
 
 ## The flow: create, comment, change status
 
-1. New task → `ticket_add rollout_id=<your session id> todo="one-line
-   summary" md_content=<the full spec>` → returns the permanent ticket
-   number **N**. The body is written ONCE, here — there is no rewrite
+1. New task → `ticket_add todo="one-line summary" md_content=<the full
+   spec>` → returns the permanent ticket number **N**. The owner is YOUR
+   session id, provided by the harness for every tool call — there is no
+   owner parameter. The body is written ONCE, here — there is no rewrite
    action. The database copy is the record; keep the plan file in the
    repo's gitignored `.tmp/tickets/NNN_slug.md` scratch only while
    drafting.
@@ -24,7 +25,7 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
    `ticket_comment id=N content="..."`. Long reports NEVER go on the
    ticket: detail lives in the agent's final response (or a gist). One
    comment at a time.
-4. Status is the only mutation: `ticket_status id=N rollout_id=<OWNER session id>
+4. Status is the only mutation: `ticket_status id=N session_id=<OWNER session id>
    status=…` (pending|in_progress|completed|cancelled|superseded), or the
    todo mirror does it for you. To supersede: set the status and name the
    replacement ticket in a comment. Nothing is ever deleted.
@@ -54,14 +55,16 @@ rules. The tool is the single source of truth for delegee rules.
 
 ## Rules
 
-- rollout_id IS the session id (`ses_…`) — one id, no other. An agent MUST
-  know its own session id: `add` and `list` take it by default. A delegator
-  handing work to a delegatee NAMES the session id the delegatee must use
-  (on `ticket_status` and `ticket_list`). To adopt another session's tickets:
-  `list rollout_id=<that session id>`. Access is by ticket number everywhere
-  else (`ticket_get id=N`, `ticket_comment id=N`). Mutations outside the owner's
-  namespace are refused and the error names the owner.
-- `list` requires the session id to query (`list rollout_id=<session id>
+- `session_id` IS the opencode session id (`ses_…`) — one id, no other. The
+  harness provides it on every tool call; `ticket_session_id` returns it.
+  `add` fills it in automatically — there is no owner parameter. A delegator
+  handing work to a delegatee NAMES the
+  session id the delegatee must use (on `ticket_status` and `ticket_list`).
+  To adopt another session's tickets: `list session_id=<that session id>`.
+  Access is by ticket number everywhere else (`ticket_get id=N`,
+  `ticket_comment id=N`). Mutations outside the owner's namespace are refused
+  and the error names the owner.
+- `list` requires the session id to query (`list session_id=<session id>
   [status=…]`); `all=true` lists every session's. An agent must know which
   session it is querying.
 - Comments are short go/no-go notes (done / not done / blocked, 1000 chars
@@ -72,7 +75,7 @@ rules. The tool is the single source of truth for delegee rules.
 - The body (`md_content`) is written once at `add`; it is never rewritten.
   Comments are the record after that — like a Jira issue: description is
   the spec, comment stream is the history.
-- Recovery (crashed session): `ticket_list rollout_id=<your session id>`,
+- Recovery (crashed session): `ticket_list session_id=<your session id>`,
   rebuild the todo list from your pending/in_progress rows (or `all=true`).
 - Never read the sqlite file directly — use the `ticket` tools.
 - Errors are structured: every failure returns

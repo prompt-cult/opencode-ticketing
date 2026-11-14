@@ -18,8 +18,8 @@
 // prose-interpretation step where it can go off the rails.
 //
 // THE CONTRACT: a ticket is an IMMUTABLE record with an APPEND-ONLY
-// comment stream; STATUS is the only field that ever changes. rollout_id
-// IS the session id — one id, no other. Access is by ticket number.
+// comment stream; STATUS is the only field that ever changes. session_id
+// IS the opencode session id — one id, no other. Access is by ticket number.
 //
 // The built-in todowrite list is the hot, ordered todo list. This store
 // is COLD storage: the durable ticket rows plus the GLOBAL SEQUENCER
@@ -294,17 +294,17 @@ export function parseEnvelope(content: string): { code: string; message: string;
 // with `jtd-codegen --target js <tool>.json`, one schema per tool.
 
 export const ADD_JTD = {
-  properties: { rollout_id: { type: "string" }, todo: { type: "string" } },
+  properties: { todo: { type: "string" } },
   optionalProperties: { md_content: { type: "string" } },
 }
 
 export const GET_JTD = { properties: { id: { type: "uint32" } } }
 
-// list's params are individually optional; the rollout_id-OR-all rule is
+// list's params are individually optional; the session_id-OR-all rule is
 // the runtime check (it owns the self-healing corrected_call).
 export const LIST_JTD = {
   optionalProperties: {
-    rollout_id: { type: "string" },
+    session_id: { type: "string" },
     status: { enum: ["pending", "in_progress", "completed", "cancelled", "superseded"] },
     all: { type: "boolean" },
   },
@@ -315,7 +315,7 @@ export const COMMENT_JTD = { properties: { id: { type: "uint32" }, content: { ty
 export const STATUS_JTD = {
   properties: {
     id: { type: "uint32" },
-    rollout_id: { type: "string" },
+    session_id: { type: "string" },
     status: { enum: ["pending", "in_progress", "completed", "cancelled", "superseded"] },
   },
 }
@@ -329,10 +329,6 @@ export function jtdValidateAdd(instance: any) {
   if (instance === null || typeof instance !== "object" || Array.isArray(instance)) {
     e.push({ instancePath: "", schemaPath: "/properties" })
   } else {
-    if (!("rollout_id" in instance) || instance["rollout_id"] === undefined) e.push({ instancePath: "", schemaPath: "/properties/rollout_id" })
-    else {
-      if (typeof instance["rollout_id"] !== "string") e.push({ instancePath: "/rollout_id", schemaPath: "/properties/rollout_id/type" })
-    }
     if (!("todo" in instance) || instance["todo"] === undefined) e.push({ instancePath: "", schemaPath: "/properties/todo" })
     else {
       if (typeof instance["todo"] !== "string") e.push({ instancePath: "/todo", schemaPath: "/properties/todo/type" })
@@ -341,7 +337,7 @@ export function jtdValidateAdd(instance: any) {
       if (typeof instance["md_content"] !== "string") e.push({ instancePath: "/md_content", schemaPath: "/optionalProperties/md_content/type" })
     }
     for (const k in instance) {
-      if (k !== "rollout_id" && k !== "todo" && k !== "md_content") e.push({ instancePath: "/" + k, schemaPath: "" })
+      if (k !== "todo" && k !== "md_content") e.push({ instancePath: "/" + k, schemaPath: "" })
     }
   }
   return e
@@ -371,14 +367,14 @@ export function jtdValidateList(instance: any) {
     if ("all" in instance && instance["all"] !== undefined) {
       if (typeof instance["all"] !== "boolean") e.push({ instancePath: "/all", schemaPath: "/optionalProperties/all/type" })
     }
-    if ("rollout_id" in instance && instance["rollout_id"] !== undefined) {
-      if (typeof instance["rollout_id"] !== "string") e.push({ instancePath: "/rollout_id", schemaPath: "/optionalProperties/rollout_id/type" })
+    if ("session_id" in instance && instance["session_id"] !== undefined) {
+      if (typeof instance["session_id"] !== "string") e.push({ instancePath: "/session_id", schemaPath: "/optionalProperties/session_id/type" })
     }
     if ("status" in instance && instance["status"] !== undefined) {
       if (typeof instance["status"] !== "string" || !STATUS_ENUM.includes(instance["status"])) e.push({ instancePath: "/status", schemaPath: "/optionalProperties/status/enum" })
     }
     for (const k in instance) {
-      if (k !== "all" && k !== "rollout_id" && k !== "status") e.push({ instancePath: "/" + k, schemaPath: "" })
+      if (k !== "all" && k !== "session_id" && k !== "status") e.push({ instancePath: "/" + k, schemaPath: "" })
     }
   }
   return e
@@ -413,16 +409,16 @@ export function jtdValidateStatus(instance: any) {
     else {
       if (typeof instance["id"] !== "number" || !Number.isInteger(instance["id"]) || instance["id"] < 0 || instance["id"] > 4294967295) e.push({ instancePath: "/id", schemaPath: "/properties/id/type" })
     }
-    if (!("rollout_id" in instance) || instance["rollout_id"] === undefined) e.push({ instancePath: "", schemaPath: "/properties/rollout_id" })
+    if (!("session_id" in instance) || instance["session_id"] === undefined) e.push({ instancePath: "", schemaPath: "/properties/session_id" })
     else {
-      if (typeof instance["rollout_id"] !== "string") e.push({ instancePath: "/rollout_id", schemaPath: "/properties/rollout_id/type" })
+      if (typeof instance["session_id"] !== "string") e.push({ instancePath: "/session_id", schemaPath: "/properties/session_id/type" })
     }
     if (!("status" in instance) || instance["status"] === undefined) e.push({ instancePath: "", schemaPath: "/properties/status" })
     else {
       if (typeof instance["status"] !== "string" || !STATUS_ENUM.includes(instance["status"])) e.push({ instancePath: "/status", schemaPath: "/properties/status/enum" })
     }
     for (const k in instance) {
-      if (k !== "id" && k !== "rollout_id" && k !== "status") e.push({ instancePath: "/" + k, schemaPath: "" })
+      if (k !== "id" && k !== "session_id" && k !== "status") e.push({ instancePath: "/" + k, schemaPath: "" })
     }
   }
   return e
@@ -476,11 +472,10 @@ export const ADD_INPUT = {
   type: "object",
   additionalProperties: false,
   properties: {
-    rollout_id: { type: "string", description: "YOUR session id (ses_…)" },
     todo: { type: "string", description: "one-line summary" },
     md_content: { type: "string", description: "the spec, written ONCE at creation — the immutable body" },
   },
-  required: ["rollout_id", "todo"],
+  required: ["todo"],
 }
 
 export const GET_INPUT = {
@@ -495,13 +490,13 @@ export const GET_INPUT = {
 // No top-level oneOf/anyOf/allOf here: a strict upstream (the Beam endpoint)
 // rejects any function schema whose top level is not a plain object — it fails
 // the whole session with invalid_function_parameters (issue #22). The XOR
-// (rollout_id or all) is enforced at runtime by executeList instead, where the
+// (session_id or all) is enforced at runtime by executeList instead, where the
 // rejection is a self-healing envelope rather than a dead session.
 export const LIST_INPUT = {
   type: "object",
   additionalProperties: false,
   properties: {
-    rollout_id: { type: "string", description: "the session id to query (required unless all=true)" },
+    session_id: { type: "string", description: "the session id to query (required unless all=true)" },
     status: { type: "string", description: "pending | in_progress | completed | cancelled | superseded (filter)" },
     all: { type: "boolean", description: "list every session's tickets (instead of one session's)" },
   },
@@ -526,27 +521,36 @@ export const STATUS_INPUT = {
   additionalProperties: false,
   properties: {
     id: { type: "number", description: "ticket number" },
-    rollout_id: { type: "string", description: "the ticket's OWNING session id" },
+    session_id: { type: "string", description: "the ticket's OWNING session id" },
     status: { type: "string", description: "pending | in_progress | completed | cancelled | superseded" },
   },
-  required: ["id", "rollout_id", "status"],
+  required: ["id", "session_id", "status"],
 }
 
 export const NONE_INPUT = { type: "object", additionalProperties: false, properties: {} }
 
+export const SESSION_INPUT = NONE_INPUT
+
 // ─── Per-tool descriptions ─────────────────────────────────────────────────
 
-const ADD_DESC = `Create a ticket. rollout_id = YOUR session id; todo = the one-line summary;
-md_content = the spec, written ONCE here (the immutable body). Returns the
-permanent ticket number N — use it as the todo item number ("N: …").`
+const ADD_DESC = `Create a ticket. The owner is YOUR session id — provided by
+the harness for every tool call; there is no owner parameter. todo = the
+one-line summary; md_content = the spec, written ONCE here (the immutable
+body). Returns the permanent ticket number N — use it as the todo item
+number ("N: …").`
 
 const GET_DESC = `Read one ticket: the row (id, created, updated, todo, status, owner session
 id, last_actor, md_content) plus its comments, oldest first. Reads are by
 ticket number — no session id needed.`
 
-const LIST_DESC = `List tickets. rollout_id = the session id to query (required — an agent
+const LIST_DESC = `List tickets. session_id = the session id to query (required — an agent
 must know which session it is querying); status filters; all=true lists
 every session's tickets instead.`
+
+const SESSION_DESC = `Return YOUR current session id — the harness-provided
+session id of this call, the id that owns any ticket you create and that
+stamps your comments. Use it when you must name your id: to hand to a
+delegatee, to query another session's tickets, to adopt.`
 
 const COMMENT_DESC = `Append ONE comment to a ticket: a short go/no-go note — done / not done /
 blocked — 1000 chars max. Long reports NEVER go on the ticket (final response
@@ -554,7 +558,7 @@ or a gist). Any session may append; the author is your session, stamped
 automatically. No session id needed — access is by ticket number.`
 
 const STATUS_DESC = `The ONLY mutation: set a ticket's status
-(pending|in_progress|completed|cancelled|superseded). rollout_id = the
+(pending|in_progress|completed|cancelled|superseded). session_id = the
 ticket's OWNING session id. Closing the todo item "N: …" does this
 automatically; this tool covers the rest. To supersede: set the status and
 name the replacement ticket in a comment.`
@@ -576,11 +580,15 @@ A ticket is an IMMUTABLE record with an APPEND-ONLY comment stream; STATUS is
 the only field that ever changes. One tool per action — there is no action
 string to spell wrongly; each tool's schema declares its required params:
 
-- ticket_add rollout_id=<your session id> todo="one-line summary"
-  [md_content=spec] -> creates the ticket; returns the permanent ticket
-  number N. The body (md_content) is written ONCE, here — never after.
+- ticket_add todo="one-line summary" [md_content=spec] -> creates the ticket
+  under YOUR session id, provided by the harness for every tool call — there
+  is no owner parameter to get wrong. Returns the permanent ticket number N.
+  The body (md_content) is written ONCE, here — never after.
+- ticket_session_id -> YOUR current session id (the harness-provided session
+  id of this call). Call it when you must name your id — to hand to a
+  delegatee, to query another session's tickets, to adopt.
 - ticket_get id=N -> the row + its comments (chronological).
-- ticket_list rollout_id=<session id> [status=<status>] -> ONE session's
+- ticket_list session_id=<session id> [status=<status>] -> ONE session's
   tickets; all=true -> every session's. The session id is required — an
   agent must know which session it is querying.
 - ticket_comment id=N content="..." -> the ONLY write after creation: a
@@ -588,7 +596,7 @@ string to spell wrongly; each tool's schema declares its required params:
   reports NEVER go on the ticket: detail lives in your final response (or a
   gist). Any session may append (the author is your session, stamped
   automatically).
-- ticket_status id=N rollout_id=<OWNER session id> status=<pending|
+- ticket_status id=N session_id=<OWNER session id> status=<pending|
   in_progress|completed|cancelled|superseded> -> the ONLY mutation.
   Owner-gated. The todo mirror sets ticket N's status automatically whenever
   the todo item "N: …" changes.
@@ -596,13 +604,15 @@ string to spell wrongly; each tool's schema declares its required params:
   ticket_get).
 - ticket_help -> this text.
 
-The session id: rollout_id IS the session id (ses_…) — one id, no other.
-- You MUST know your own session id. ticket_add and ticket_list take YOUR
-  session id by default; ticket_status takes the ticket owner's.
+The session id: session_id IS the opencode session id (ses_…) — one id, no
+other. The harness provides it on every tool call (context.sessionID).
+- Your session id is the harness-provided session id; ticket_session_id
+  returns it. ticket_add fills it in automatically — the owner is always
+  YOUR session, so there is no owner parameter to spell wrongly.
 - When delegating, NAME the session id the delegatee must use — it uses
   THAT id on ticket_status and ticket_list.
 - To find tickets by another session (to adopt):
-  ticket_list rollout_id=<that session id>.
+  ticket_list session_id=<that session id>.
 - Access is by ticket number everywhere else: ticket_get id=N,
   ticket_comment id=N. Too simple to get wrong.
 
@@ -638,7 +648,10 @@ is a prerequisite for starting work: read the ticket, read these rules, then
 DO THE WORK. Your only writes are ticket_comment notes — SHORT go/no-go:
 done / not done / blocked, 1000 chars max — and, when the work is done,
 ticket_status with the OWNER's session id — your launch prompt NAMES it; use
-it. Long reports NEVER go on the ticket: put the detail in your final
+it. Your session id is the harness-provided session id (ticket_session_id
+returns it) — the id you were launched under, and the owner id of any ticket
+you touch.
+Long reports NEVER go on the ticket: put the detail in your final
 response to the orchestrator (or a gist). The DELEGATOR reviews the diff,
 runs the tests, and commits — you do not.
 
@@ -666,10 +679,20 @@ Subagent (delegee) rules — obey all of them:
 // params at the harness layer when the harness validates; these envelopes
 // cover every other path — and keep the contract greppable.
 
+// currentSessionId is the doctrine source of the caller's session id: the
+// harness-provided per-call context.sessionID (a required field of the tool
+// Context in opencode v2 — verified live on v2.2.5, TUI and headless run).
+// The OPENCODE_SESSION_ID env var is deliberately NOT consulted: it is
+// shell-child-only, undocumented, and stale under --continue/--fork (issue
+// #26). ticket_add uses this, so there is no owner parameter to spell
+// wrongly; ticket_session_id surfaces it for the agent.
+function currentSessionId(context?: any): string | undefined {
+  return context?.sessionID || undefined
+}
+
 export async function executeAdd(args: any, context: any): Promise<{ content: string }> {
   const s = getStore()
   const corrected: Record<string, unknown> = {
-    rollout_id: args.rollout_id ?? "<fill: your session id>",
     todo: args.todo ?? "<fill: one-line summary>",
   }
   if (args.md_content !== undefined) corrected.md_content = args.md_content
@@ -677,13 +700,22 @@ export async function executeAdd(args: any, context: any): Promise<{ content: st
   if (jtd.length) return jtdFail("ADD", jtd, corrected)
   // JTD passes; empty strings are still missing semantically.
   if (!args.todo) return fail("E_ADD_MISSING_TODO", "ticket_add requires 'todo' (the one-line summary)", corrected)
-  if (!args.rollout_id) return fail("E_ADD_MISSING_ROLLOUT_ID", "ticket_add requires 'rollout_id' (your session id)", corrected)
+  const sessionId = currentSessionId(context)
+  if (!sessionId) return fail("E_ADD_NO_SESSION_ID", "no session id found — the harness provided no session id for this call; ticket_session_id reports it", corrected)
   try {
-    const row = s.add({ todo: args.todo, rollout_id: args.rollout_id, md_content: args.md_content ?? null })
-    return ok({ rollout_id: row.rollout_id, id: row.id, ticket: row })
+    const row = s.add({ todo: args.todo, rollout_id: sessionId, md_content: args.md_content ?? null })
+    return ok({ session_id: row.rollout_id, id: row.id, ticket: row })
   } catch (e) {
     return fail("E_ADD_FAILED", (e as Error).message, corrected)
   }
+}
+
+export async function executeSession(args: any = {}, context?: any): Promise<{ content: string }> {
+  const jtd = jtdValidateNone(args)
+  if (jtd.length) return jtdFail("SESSION", jtd, {})
+  const sessionId = currentSessionId(context)
+  if (!sessionId) return fail("E_SESSION_NO_ID", "no session id found — the harness provided no session id for this call", {})
+  return ok({ session_id: sessionId })
 }
 
 export async function executeGet(args: any, context: any): Promise<{ content: string }> {
@@ -704,19 +736,19 @@ export async function executeGet(args: any, context: any): Promise<{ content: st
 
 export async function executeList(args: any, context: any): Promise<{ content: string }> {
   const s = getStore()
-  const corrected = { rollout_id: args.rollout_id ?? "<fill: the session id to query>", all: true }
+  const corrected = { session_id: args.session_id ?? "<fill: the session id to query>", all: true }
   const jtd = jtdValidateList(args)
   if (jtd.length) return jtdFail("LIST", jtd, corrected)
-  if (!args.rollout_id && !args.all)
+  if (!args.session_id && !args.all)
     return fail(
-      "E_LIST_MISSING_ROLLOUT_ID",
-      "ticket_list requires 'rollout_id' (the session id to query) — or all=true for every session's tickets",
+      "E_LIST_MISSING_SESSION_ID",
+      "ticket_list requires 'session_id' (the session id to query) — or all=true for every session's tickets",
       corrected,
     )
   try {
-    return ok(s.list({ status: args.status, rollout_id: args.rollout_id, all: args.all }))
+    return ok(s.list({ status: args.status, rollout_id: args.session_id, all: args.all }))
   } catch (e) {
-    return fail("E_LIST_FAILED", (e as Error).message, { rollout_id: args.rollout_id ?? "<session id>", all: args.all })
+    return fail("E_LIST_FAILED", (e as Error).message, { session_id: args.session_id ?? "<session id>", all: args.all })
   }
 }
 
@@ -754,22 +786,22 @@ export async function executeStatus(args: any, context: any): Promise<{ content:
     const row = typeof args?.id === "number" ? s.get(args.id) : undefined
     const statusLegal = typeof args?.status === "string" && STATUS_ENUM.includes(args.status)
     const corrected = row
-      ? { id: row.id, rollout_id: row.rollout_id, status: statusLegal ? args.status : "pending" }
+      ? { id: row.id, session_id: row.rollout_id, status: statusLegal ? args.status : "pending" }
       : {
           id: args?.id ?? "<fill: ticket number>",
-          rollout_id: args?.rollout_id ?? "<the ticket's owner session id>",
+          session_id: args?.session_id ?? "<the ticket's owner session id>",
           status: statusLegal ? args.status : "pending",
         }
     return jtdFail("STATUS", jtd, corrected)
   }
   const row = s.get(args.id)
   if (!row) return fail("E_NO_TICKET", `no ticket with number ${args.id}`, { id: args.id })
-  const corrected = { id: row.id, rollout_id: row.rollout_id, status: args.status }
-  // JTD passed, but an empty-string rollout_id is still missing semantically.
-  if (!args.rollout_id)
-    return fail("E_STATUS_MISSING_ROLLOUT_ID", `ticket_status requires 'rollout_id' — this ticket's owner session id is "${row.rollout_id}"`, corrected)
+  const corrected = { id: row.id, session_id: row.rollout_id, status: args.status }
+  // JTD passed, but an empty-string session_id is still missing semantically.
+  if (!args.session_id)
+    return fail("E_STATUS_MISSING_SESSION_ID", `ticket_status requires 'session_id' — this ticket's owner session id is "${row.rollout_id}"`, corrected)
   try {
-    const updated = s.setStatus(args.id, { rollout_id: args.rollout_id, status: args.status, last_actor: callerSession ?? null })
+    const updated = s.setStatus(args.id, { rollout_id: args.session_id, status: args.status, last_actor: callerSession ?? null })
     if (!updated) return fail("E_NO_TICKET", `no ticket with number ${args.id}`, corrected)
     return ok(updated)
   } catch (e) {
@@ -799,6 +831,7 @@ export default {
   setup: async (ctx) => {
     await ctx.tool.transform((tools) => {
       tools.add({ name: "ticket_add", options: { codemode: false }, description: ADD_DESC, input: ADD_INPUT, execute: (a: any, c: any) => executeAdd(a, c) })
+      tools.add({ name: "ticket_session_id", options: { codemode: false }, description: SESSION_DESC, input: SESSION_INPUT, execute: (a: any, c: any) => executeSession(a, c) })
       tools.add({ name: "ticket_get", options: { codemode: false }, description: GET_DESC, input: GET_INPUT, execute: (a: any, c: any) => executeGet(a, c) })
       tools.add({ name: "ticket_list", options: { codemode: false }, description: LIST_DESC, input: LIST_INPUT, execute: (a: any, c: any) => executeList(a, c) })
       tools.add({ name: "ticket_comment", options: { codemode: false }, description: COMMENT_DESC, input: COMMENT_INPUT, execute: (a: any, c: any) => executeComment(a, c) })

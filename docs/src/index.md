@@ -31,10 +31,10 @@ history.
 ## Who does what (delegation)
 
 - The **delegator** (the main agent) creates the ticket:
-  `ticket_add rollout_id=<its session id> todo="..."` (+ the plan as
-  `md_content`, written once). It owns the session id. It does **not**
-  call `ticket_rules` — the rules are not for it. On return it
-  reviews the diff, runs the tests, and commits.
+  `ticket_add todo="..."` (+ the plan as `md_content`, written once). The
+  owner is YOUR session id, provided by the harness for every tool call. It
+  owns the session id. It does **not** call `ticket_rules` — the rules are
+  not for it. On return it reviews the diff, runs the tests, and commits.
 - The **delegatee** (the launched subagent) is handed ONLY the ticket
   number. Its first two calls are READS: `ticket_get id=N` (its full
   instructions), then `ticket_rules`. It **never edits the ticket** —
@@ -46,12 +46,13 @@ history.
 ## The tool surface
 
 ```
-ticket_add rollout_id=<session id> todo="…" [md_content=spec]   create the immutable ticket
-ticket_comment id=N content="…"                                 append one SHORT note (1000 max)
-ticket_status id=N rollout_id=<OWNER session id> status=…       the only mutation
-ticket_get id=N                                                  read the ticket + comments
-ticket_list rollout_id=<session id> [status=]                    one session's tickets (all=true: every session's)
-ticket_rules / ticket_help                                       the delegatee banner / the whole contract
+ticket_add todo="…" [md_content=spec]                      create the immutable ticket under YOUR session id
+ticket_session_id                                            YOUR current session id
+ticket_comment id=N content="…"                             append one SHORT note (1000 max)
+ticket_status id=N session_id=<OWNER session id> status=…   the only mutation
+ticket_get id=N                                              read the ticket + comments
+ticket_list session_id=<session id> [status=]               one session's tickets (all=true: every session's)
+ticket_rules / ticket_help                                  the delegatee banner / the whole contract
 ```
 
 A comment is a short go/no-go note — done / not done / blocked. Long reports
@@ -64,12 +65,14 @@ parameters, wrong types and illegal values are rejected outright. Every
 failure returns a structured envelope `{code, message, corrected_call}` —
 re-emit `corrected_call` verbatim and the call succeeds.
 
-`rollout_id` IS the session id — one id, no other. An agent **must know its
-own session id**: `add` and `list` take it by default. A delegator handing
-work to a delegatee **names the session id the delegatee must use**. To adopt
-another session's tickets, query with that session id. Access is by ticket
-number everywhere else. `list` requires it — an agent must know which
-session it is querying (`all=true` lists every session's).
+`session_id` IS the opencode session id — one id, no other. The harness
+provides it on every tool call; `ticket_session_id` returns it. `add`
+fills it in automatically — there is no owner parameter. A delegator
+handing work to a delegatee **names the
+session id the delegatee must use**. To adopt another session's tickets,
+query with that session id. Access is by ticket number everywhere else.
+`list` requires the target session id — an agent must know which session it
+is querying (`all=true` lists every session's).
 
 Statuses: `pending | in_progress | completed | cancelled | superseded`.
 Closing the todo item `N: …` sets ticket N's status automatically (the
