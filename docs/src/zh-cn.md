@@ -17,7 +17,8 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
   delegatee 开始工作不需要任何写入:读 ticket、读规则,然后干活。
 - **只有状态会变** —— todo 镜像自动写它：关闭 todo 项 `N: …` 即关闭
   ticket N。`ticket_status` 覆盖其余情况（仅限所有者），包括 `superseded`：
-  重定范围 = 一次状态变更 + 一条指明继任者的评论。
+  重定范围 = 一次状态变更 + 一条指明继任者的评论 —— 并将旧 ticket 标记为
+  软删除（默认从列表隐藏；`include_deleted=true` 可查看）。
 - **从不删除。** 没有删除动作。
 
 就像一个 Jira issue：描述是规格,评论流是历史。
@@ -44,7 +45,7 @@ ticket_session_id                                             YOUR 当前 sessio
 ticket_comment id=N content="…"                              追加一条简短便签（最多 1000）
 ticket_status id=N session_id=<所有者 session id> status=…   唯一的变更
 ticket_get id=N                                               读 ticket + 评论
-ticket_list session_id=<session id> [status=] [type=|types=] 一个 session 的 tickets（all=true:所有 session 的）
+ticket_list session_id=<session id> [status=] [type=|types=] [include_deleted=true] 一个 session 的 tickets（all=true:所有 session 的；删除的默认隐藏，除非 include_deleted）
 ticket_rules / ticket_help                                   delegatee 横幅 / 完整契约
 ```
 

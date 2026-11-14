@@ -28,7 +28,9 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
 4. Status is the only mutation: `ticket_status id=N session_id=<OWNER session id>
    status=…` (pending|in_progress|completed|cancelled|superseded), or the
    todo mirror does it for you. To supersede: set the status and name the
-   replacement ticket in a comment. Nothing is ever deleted.
+   replacement ticket in a comment — the old ticket is marked soft-deleted
+   (hidden from lists; `include_deleted=true` reveals it). Nothing is ever
+   hard-deleted.
 
 ## Delegation — the stack/burndown cycle
 
@@ -84,8 +86,10 @@ rules. The tool is the single source of truth for delegee rules.
   `ticket_comment id=N`). Mutations outside the owner's namespace are refused
   and the error names the owner.
 - `list` requires the session id to query (`list session_id=<session id>
-  [status=…]`); `all=true` lists every session's. An agent must know which
-  session it is querying.
+  [status=…] [type=|types=] [include_deleted=true]`); `all=true` lists every
+  session's. Soft-deleted tickets are hidden unless `include_deleted=true`
+  (superseded tickets are marked deleted). An agent must know which session it
+  is querying.
 - Comments are short go/no-go notes (done / not done / blocked, 1000 chars
   max) — never essays. Long reports live in the agent's final response
   (or a gist), never on the ticket. Any session may append (the author is

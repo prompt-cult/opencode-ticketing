@@ -77,6 +77,7 @@ test("each tool's schema declares its required params and rejects junk keys", ()
   expect(ADD_INPUT.properties.type).toBeDefined()
   expect(LIST_INPUT.properties.type).toBeDefined()
   expect(LIST_INPUT.properties.types).toBeDefined()
+  expect(LIST_INPUT.properties.include_deleted).toBeDefined()
   expect(COMMENT_INPUT.required).toEqual(["id", "content"])
   expect(COMMENT_INPUT.additionalProperties).toBe(false)
   expect(COMMENT_INPUT.properties.content.maxLength).toBe(1000)
@@ -255,8 +256,9 @@ test("the RFC 8927 validators: the legal set is exact — unit level", () => {
   expect(jtdValidateGet({ id: 1.5 })).toEqual([{ instancePath: "/id", schemaPath: "/properties/id/type" }])
   // list: all optional individually
   expect(jtdValidateList({})).toEqual([])
-  expect(jtdValidateList({ session_id: "s", status: "pending", type: "task", types: ["bug"], all: true })).toEqual([])
+  expect(jtdValidateList({ session_id: "s", status: "pending", type: "task", types: ["bug"], include_deleted: true, all: true })).toEqual([])
   expect(jtdValidateList({ types: "oops" })[0].schemaPath).toBe("/optionalProperties/types/elements/type")
+  expect(jtdValidateList({ include_deleted: "yes" })[0].schemaPath).toBe("/optionalProperties/include_deleted/type")
   expect(jtdValidateList({ status: "bogus" }))[0]
   expect(jtdValidateList({ status: "bogus" })[0].schemaPath).toBe("/optionalProperties/status/enum")
   // comment: id+content required
@@ -367,6 +369,31 @@ test("ticket_list filters by type and types (multi); combines with status", asyn
   expect(new Set(multi.map((r: any) => r.todo))).toEqual(new Set(["t-task", "t-bug"]))
   const plusStatus = JSON.parse((await executeList({ session_id: "ses_types", types: ["task", "bug"], status: "pending" }, {})).content)
   expect(plusStatus.length).toBe(2)
+})
+
+test("migration: the deleted column exists with default 0", () => {
+  const store = new TicketStore(ticketDbPath())
+  const db = (store as any).db
+  const cols = (db.query("PRAGMA table_info(ticket)").all() as any[]).map((r: any) => r.name)
+  expect(cols).toContain("deleted")
+  const fresh = store.add({ todo: "sd-default", rollout_id: "ses_sd2" })
+  expect(fresh.deleted).toBe(0)
+  store.close()
+})
+
+test("soft delete: superseding marks the old ticket deleted; lists hide it unless include_deleted", async () => {
+  const created = await add("supersede-target", "ses_sd")
+  const upd = JSON.parse((await executeStatus({ id: created.id, session_id: "ses_sd", status: "superseded" }, {})).content)
+  expect(upd.status).toBe("superseded")
+  expect(upd.deleted).toBe(1)
+  // hidden by default, also under all=true
+  const normal = JSON.parse((await executeList({ session_id: "ses_sd" }, {})).content)
+  expect(normal.some((r: any) => r.id === created.id)).toBe(false)
+  const everything = JSON.parse((await executeList({ all: true }, {})).content)
+  expect(everything.some((r: any) => r.id === created.id)).toBe(false)
+  // include_deleted reveals it
+  const withDeleted = JSON.parse((await executeList({ session_id: "ses_sd", include_deleted: true }, {})).content)
+  expect(withDeleted.some((r: any) => r.id === created.id)).toBe(true)
 })
 
 test("ticket_session_id returns the current session id from context; without context it fails E_SESSION_NO_ID", async () => {
