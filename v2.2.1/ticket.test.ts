@@ -49,32 +49,17 @@ function envelope(content: string) {
 }
 
 // add drives the documented surface: ticket_add takes NO session-id param —
-// the owner comes from $OPENCODE_SESSION_ID (issue #26).
+// the owner is the harness-provided context.sessionID (issue #26). The
+// OPENCODE_SESSION_ID env var is deliberately never consulted.
 async function add(todo: string, owner: string, md_content?: string) {
-  const prev = process.env.OPENCODE_SESSION_ID
-  process.env.OPENCODE_SESSION_ID = owner
-  try {
-    const res = await executeAdd({ todo, md_content }, { sessionID: owner })
-    return JSON.parse(res.content)
-  } finally {
-    process.env.OPENCODE_SESSION_ID = prev
-  }
-}
-
-async function withoutSessionId<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = process.env.OPENCODE_SESSION_ID
-  delete process.env.OPENCODE_SESSION_ID
-  try {
-    return await fn()
-  } finally {
-    if (prev !== undefined) process.env.OPENCODE_SESSION_ID = prev
-  }
+  const res = await executeAdd({ todo, md_content }, { sessionID: owner })
+  return JSON.parse(res.content)
 }
 
 // ─── The schemas make misuse unrepresentable ────────────────────────────────
 
 test("each tool's schema declares its required params and rejects junk keys", () => {
-  // add: NO session-id param — the owner comes from $OPENCODE_SESSION_ID
+  // add: NO session-id param — the owner comes from context.sessionID
   expect(ADD_INPUT.required).toEqual(["todo"])
   expect(ADD_INPUT.additionalProperties).toBe(false)
   expect(ADD_INPUT.properties.rollout_id).toBeUndefined()
@@ -137,10 +122,10 @@ test("every validation failure returns {code, message, corrected_call}; each mis
   const addNoTodo = envelope((await executeAdd({}, {})).content)
   expect(addNoTodo.code).toBe("E_ADD_MISSING_TODO")
   expect(addNoTodo.corrected_call.todo).toContain("<fill:")
-  // ticket_add takes NO owner param: with $OPENCODE_SESSION_ID unset it
-  // fails E_ADD_NO_SESSION_ID; with it set, the env is the owner.
-  const addNoSession = await withoutSessionId(() => executeAdd({ todo: "x" }, {}))
-  expect(envelope(addNoSession.content).code).toBe("E_ADD_NO_SESSION_ID")
+  // ticket_add takes NO owner param: without harness context it fails
+  // E_ADD_NO_SESSION_ID.
+  const addNoSession = envelope((await executeAdd({ todo: "x" }, {})).content)
+  expect(addNoSession.code).toBe("E_ADD_NO_SESSION_ID")
 
   const getNoId = envelope((await executeGet({}, {})).content)
   expect(getNoId.code).toBe("E_GET_MISSING_ID")
@@ -221,7 +206,8 @@ test("help states the whole contract: tools, doctrine, envelope; no action strin
     expect(content).toContain(tool)
   }
   expect(content).toContain("session_id IS the opencode session id")
-  expect(content).toContain("$OPENCODE_SESSION_ID")
+  expect(content).not.toContain("OPENCODE_SESSION_ID") // the env var is dead
+  expect(content).toContain("provided by the harness")
   expect(content).toContain("ticket_add fills it in automatically")
   expect(content).toContain("no owner parameter to spell wrongly")
   expect(content).toContain("NAME the session id the delegatee must use")
@@ -310,34 +296,34 @@ test("GREEN TARGET: passing a session id to ticket_add is rejected — the env i
   expect(after).toBe(before) // rejected BEFORE the store: nothing was created
 })
 
-test("ticket_add derives the owner from $OPENCODE_SESSION_ID — no owner param", async () => {
+test("ticket_add derives the owner from context.sessionID — no owner param", async () => {
   const created = await add("env owner test", "ses_envowner")
   expect(created.session_id).toBe("ses_envowner")
   expect(created.ticket.rollout_id).toBe("ses_envowner")
   expect(created.id).toBeGreaterThan(0)
 })
 
-test("headless fallback: without $OPENCODE_SESSION_ID, the harness-reported context.sessionID is the owner (opencode run)", async () => {
-  const created = await withoutSessionId(async () => {
-    const res = await executeAdd({ todo: "headless fallback" }, { sessionID: "ses_headless" })
-    return JSON.parse(res.content)
-  })
-  expect(created.session_id).toBe("ses_headless")
-  expect(created.ticket.rollout_id).toBe("ses_headless")
-  const sid = JSON.parse((await withoutSessionId(() => executeSession({}, { sessionID: "ses_headless" }))).content)
-  expect(sid.session_id).toBe("ses_headless")
+test("context.sessionID is the sole owner source — the OPENCODE_SESSION_ID env var is dead", async () => {
+  process.env.OPENCODE_SESSION_ID = "ses_envghost"
+  try {
+    // no context -> error even though the env var is set
+    expect(envelope((await executeAdd({ todo: "x" }, {})).content).code).toBe("E_ADD_NO_SESSION_ID")
+    expect(envelope((await executeSession({}, {})).content).code).toBe("E_SESSION_NO_ID")
+    // context wins over any env value
+    const created = JSON.parse((await executeAdd({ todo: "env ignored" }, { sessionID: "ses_ctxowner" })).content)
+    expect(created.session_id).toBe("ses_ctxowner")
+    expect(created.ticket.rollout_id).toBe("ses_ctxowner")
+    const sid = JSON.parse((await executeSession({}, { sessionID: "ses_ctxowner" })).content)
+    expect(sid.session_id).toBe("ses_ctxowner")
+  } finally {
+    delete process.env.OPENCODE_SESSION_ID
+  }
 })
 
-test("ticket_session_id returns the current session id; without $OPENCODE_SESSION_ID it fails E_SESSION_NO_ID", async () => {
-  const prev = process.env.OPENCODE_SESSION_ID
-  process.env.OPENCODE_SESSION_ID = "ses_sessionprobe"
-  try {
-    const res = JSON.parse((await executeSession()).content)
-    expect(res.session_id).toBe("ses_sessionprobe")
-  } finally {
-    process.env.OPENCODE_SESSION_ID = prev
-  }
-  const missing = envelope((await withoutSessionId(() => executeSession())).content)
+test("ticket_session_id returns the current session id from context; without context it fails E_SESSION_NO_ID", async () => {
+  const res = JSON.parse((await executeSession({}, { sessionID: "ses_sessionprobe" })).content)
+  expect(res.session_id).toBe("ses_sessionprobe")
+  const missing = envelope((await executeSession({}, {})).content)
   expect(missing.code).toBe("E_SESSION_NO_ID")
 })
 

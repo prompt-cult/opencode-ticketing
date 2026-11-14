@@ -533,8 +533,8 @@ export const SESSION_INPUT = NONE_INPUT
 
 // ─── Per-tool descriptions ─────────────────────────────────────────────────
 
-const ADD_DESC = `Create a ticket. The owner is YOUR session id — read from
-$OPENCODE_SESSION_ID automatically; there is no owner parameter. todo = the
+const ADD_DESC = `Create a ticket. The owner is YOUR session id — provided by
+the harness for every tool call; there is no owner parameter. todo = the
 one-line summary; md_content = the spec, written ONCE here (the immutable
 body). Returns the permanent ticket number N — use it as the todo item
 number ("N: …").`
@@ -547,10 +547,10 @@ const LIST_DESC = `List tickets. session_id = the session id to query (required 
 must know which session it is querying); status filters; all=true lists
 every session's tickets instead.`
 
-const SESSION_DESC = `Return YOUR current session id — the $OPENCODE_SESSION_ID value, the id
-that owns any ticket you create and that stamps your comments. Use it when
-you must name your id: to hand to a delegatee, to query another session's
-tickets, to adopt.`
+const SESSION_DESC = `Return YOUR current session id — the harness-provided
+session id of this call, the id that owns any ticket you create and that
+stamps your comments. Use it when you must name your id: to hand to a
+delegatee, to query another session's tickets, to adopt.`
 
 const COMMENT_DESC = `Append ONE comment to a ticket: a short go/no-go note — done / not done /
 blocked — 1000 chars max. Long reports NEVER go on the ticket (final response
@@ -581,12 +581,12 @@ the only field that ever changes. One tool per action — there is no action
 string to spell wrongly; each tool's schema declares its required params:
 
 - ticket_add todo="one-line summary" [md_content=spec] -> creates the ticket
-  under YOUR session id, read from $OPENCODE_SESSION_ID automatically — there
+  under YOUR session id, provided by the harness for every tool call — there
   is no owner parameter to get wrong. Returns the permanent ticket number N.
   The body (md_content) is written ONCE, here — never after.
-- ticket_session_id -> YOUR current session id (the $OPENCODE_SESSION_ID
-  value). Call it when you must name your id — to hand to a delegatee, to
-  query another session's tickets, to adopt.
+- ticket_session_id -> YOUR current session id (the harness-provided session
+  id of this call). Call it when you must name your id — to hand to a
+  delegatee, to query another session's tickets, to adopt.
 - ticket_get id=N -> the row + its comments (chronological).
 - ticket_list session_id=<session id> [status=<status>] -> ONE session's
   tickets; all=true -> every session's. The session id is required — an
@@ -605,11 +605,10 @@ string to spell wrongly; each tool's schema declares its required params:
 - ticket_help -> this text.
 
 The session id: session_id IS the opencode session id (ses_…) — one id, no
-other. Its canonical source in the harness is the environment variable
-$OPENCODE_SESSION_ID.
-- Your session id is $OPENCODE_SESSION_ID; ticket_session_id returns it.
-  ticket_add fills it in automatically — the owner is always YOUR session,
-  so there is no owner parameter to spell wrongly.
+other. The harness provides it on every tool call (context.sessionID).
+- Your session id is the harness-provided session id; ticket_session_id
+  returns it. ticket_add fills it in automatically — the owner is always
+  YOUR session, so there is no owner parameter to spell wrongly.
 - When delegating, NAME the session id the delegatee must use — it uses
   THAT id on ticket_status and ticket_list.
 - To find tickets by another session (to adopt):
@@ -649,8 +648,9 @@ is a prerequisite for starting work: read the ticket, read these rules, then
 DO THE WORK. Your only writes are ticket_comment notes — SHORT go/no-go:
 done / not done / blocked, 1000 chars max — and, when the work is done,
 ticket_status with the OWNER's session id — your launch prompt NAMES it; use
-it. Your session id is $OPENCODE_SESSION_ID (ticket_session_id returns it) —
-the id you were launched under, and the owner id of any ticket you touch.
+it. Your session id is the harness-provided session id (ticket_session_id
+returns it) — the id you were launched under, and the owner id of any ticket
+you touch.
 Long reports NEVER go on the ticket: put the detail in your final
 response to the orchestrator (or a gist). The DELEGATOR reviews the diff,
 runs the tests, and commits — you do not.
@@ -679,15 +679,15 @@ Subagent (delegee) rules — obey all of them:
 // params at the harness layer when the harness validates; these envelopes
 // cover every other path — and keep the contract greppable.
 
-// currentSessionId is the doctrine source of the caller's session id. The
-// canonical source is the harness environment variable OPENCODE_SESSION_ID
-// (set for interactive agent processes). Headless `opencode run` sessions
-// do not get the variable, so the harness-provided context.sessionID (the
-// same id) is the fallback — verified live on opencode v2.2.5 (issue #26
-// acceptance). ticket_add uses it, so there is no owner parameter to spell
+// currentSessionId is the doctrine source of the caller's session id: the
+// harness-provided per-call context.sessionID (a required field of the tool
+// Context in opencode v2 — verified live on v2.2.5, TUI and headless run).
+// The OPENCODE_SESSION_ID env var is deliberately NOT consulted: it is
+// shell-child-only, undocumented, and stale under --continue/--fork (issue
+// #26). ticket_add uses this, so there is no owner parameter to spell
 // wrongly; ticket_session_id surfaces it for the agent.
 function currentSessionId(context?: any): string | undefined {
-  return process.env.OPENCODE_SESSION_ID || context?.sessionID || undefined
+  return context?.sessionID || undefined
 }
 
 export async function executeAdd(args: any, context: any): Promise<{ content: string }> {
@@ -701,7 +701,7 @@ export async function executeAdd(args: any, context: any): Promise<{ content: st
   // JTD passes; empty strings are still missing semantically.
   if (!args.todo) return fail("E_ADD_MISSING_TODO", "ticket_add requires 'todo' (the one-line summary)", corrected)
   const sessionId = currentSessionId(context)
-  if (!sessionId) return fail("E_ADD_NO_SESSION_ID", "no session id found — $OPENCODE_SESSION_ID is unset and the harness reported no session id; ticket_session_id reports it", corrected)
+  if (!sessionId) return fail("E_ADD_NO_SESSION_ID", "no session id found — the harness provided no session id for this call; ticket_session_id reports it", corrected)
   try {
     const row = s.add({ todo: args.todo, rollout_id: sessionId, md_content: args.md_content ?? null })
     return ok({ session_id: row.rollout_id, id: row.id, ticket: row })
@@ -714,7 +714,7 @@ export async function executeSession(args: any = {}, context?: any): Promise<{ c
   const jtd = jtdValidateNone(args)
   if (jtd.length) return jtdFail("SESSION", jtd, {})
   const sessionId = currentSessionId(context)
-  if (!sessionId) return fail("E_SESSION_NO_ID", "no session id found — $OPENCODE_SESSION_ID is unset and the harness reported no session id", {})
+  if (!sessionId) return fail("E_SESSION_NO_ID", "no session id found — the harness provided no session id for this call", {})
   return ok({ session_id: sessionId })
 }
 

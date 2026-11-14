@@ -26,7 +26,7 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 
 - **delegator**（提出 ticket 的主 agent）创建它：
   `ticket_add todo="..."`（+ 计划作为 `md_content`,只写一次）。所有者是
-  YOUR session id,自动取自 `$OPENCODE_SESSION_ID`。它拥有 session id。
+  YOUR session id,由 harness 在每次工具调用时提供。它拥有 session id。
   它**不**调用 `ticket_rules` —— 规则不是给它的。返回后它审查 diff、
   跑测试、提交。
 - **delegatee**（被启动的 subagent）只拿到 ticket 编号。它的前两个调用
@@ -39,7 +39,7 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 ## 工具面
 
 ```
-ticket_add todo="…" [md_content=spec]                       在 YOUR session id（$OPENCODE_SESSION_ID）下创建不可变 ticket
+ticket_add todo="…" [md_content=spec]                       在 YOUR session id 下创建不可变 ticket
 ticket_session_id                                             YOUR 当前 session id
 ticket_comment id=N content="…"                              追加一条简短便签（最多 1000）
 ticket_status id=N session_id=<所有者 session id> status=…   唯一的变更
@@ -57,9 +57,9 @@ ticket_rules / ticket_help                                   delegatee 横幅 / 
 非法值一律拒绝。每次失败都返回结构化信封
 `{code, message, corrected_call}` —— 原样重发 corrected_call 即可成功。
 
-`session_id` 就是 opencode session id —— 只有一个 id。其规范来源是环境变量
-`$OPENCODE_SESSION_ID`；`ticket_session_id` 返回它。`add` 自动用它 ——
-没有所有者参数。委派者把工作交给 delegatee 时**指明 delegatee 必须使用的
+`session_id` 就是 opencode session id —— 只有一个 id。harness 在每次工具
+调用时提供它；`ticket_session_id` 返回它。`add` 自动用它 —— 没有所有者
+参数。委派者把工作交给 delegatee 时**指明 delegatee 必须使用的
 session id**。要认领另一个 session 的 tickets,用那个 session id 查询。
 其余操作按 ticket 编号进行。`list` 必须带目标 session id —— agent 必须
 知道自己在查哪个 session（`all=true` 列出所有 session 的）。

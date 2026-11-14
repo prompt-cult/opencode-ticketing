@@ -12,10 +12,10 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
 
 1. New task → `ticket_add todo="one-line summary" md_content=<the full
    spec>` → returns the permanent ticket number **N**. The owner is YOUR
-   session id, read from `$OPENCODE_SESSION_ID` automatically — there is
-   no owner parameter. The body is written ONCE, here — there is no
-   rewrite action. The database copy is the record; keep the plan file in
-   the repo's gitignored `.tmp/tickets/NNN_slug.md` scratch only while
+   session id, provided by the harness for every tool call — there is no
+   owner parameter. The body is written ONCE, here — there is no rewrite
+   action. The database copy is the record; keep the plan file in the
+   repo's gitignored `.tmp/tickets/NNN_slug.md` scratch only while
    drafting.
 2. `todowrite` — append item **`N: <descriptive name>`** at the END of the
    list. Front-jump only when the user says "do it next" or gives an
@@ -55,10 +55,10 @@ rules. The tool is the single source of truth for delegee rules.
 
 ## Rules
 
-- `session_id` IS the opencode session id (`ses_…`) — one id, no other. Its
-  canonical source is the environment variable `$OPENCODE_SESSION_ID`;
-  `ticket_session_id` returns it. `add` fills it in automatically — there is
-  no owner parameter. A delegator handing work to a delegatee NAMES the
+- `session_id` IS the opencode session id (`ses_…`) — one id, no other. The
+  harness provides it on every tool call; `ticket_session_id` returns it.
+  `add` fills it in automatically — there is no owner parameter. A delegator
+  handing work to a delegatee NAMES the
   session id the delegatee must use (on `ticket_status` and `ticket_list`).
   To adopt another session's tickets: `list session_id=<that session id>`.
   Access is by ticket number everywhere else (`ticket_get id=N`,

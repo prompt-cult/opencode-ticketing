@@ -32,10 +32,9 @@ history.
 
 - The **delegator** (the main agent) creates the ticket:
   `ticket_add todo="..."` (+ the plan as `md_content`, written once). The
-  owner is YOUR session id, read from `$OPENCODE_SESSION_ID` automatically.
-  It owns the session id. It does **not** call `ticket_rules` — the rules
-  are not for it. On return it reviews the diff, runs the tests, and
-  commits.
+  owner is YOUR session id, provided by the harness for every tool call. It
+  owns the session id. It does **not** call `ticket_rules` — the rules are
+  not for it. On return it reviews the diff, runs the tests, and commits.
 - The **delegatee** (the launched subagent) is handed ONLY the ticket
   number. Its first two calls are READS: `ticket_get id=N` (its full
   instructions), then `ticket_rules`. It **never edits the ticket** —
@@ -47,7 +46,7 @@ history.
 ## The tool surface
 
 ```
-ticket_add todo="…" [md_content=spec]                      create the immutable ticket under YOUR session id ($OPENCODE_SESSION_ID)
+ticket_add todo="…" [md_content=spec]                      create the immutable ticket under YOUR session id
 ticket_session_id                                            YOUR current session id
 ticket_comment id=N content="…"                             append one SHORT note (1000 max)
 ticket_status id=N session_id=<OWNER session id> status=…   the only mutation
@@ -66,10 +65,10 @@ parameters, wrong types and illegal values are rejected outright. Every
 failure returns a structured envelope `{code, message, corrected_call}` —
 re-emit `corrected_call` verbatim and the call succeeds.
 
-`session_id` IS the opencode session id — one id, no other. Its canonical
-source is the environment variable `$OPENCODE_SESSION_ID`;
-`ticket_session_id` returns it. `add` fills it in automatically — there is
-no owner parameter. A delegator handing work to a delegatee **names the
+`session_id` IS the opencode session id — one id, no other. The harness
+provides it on every tool call; `ticket_session_id` returns it. `add`
+fills it in automatically — there is no owner parameter. A delegator
+handing work to a delegatee **names the
 session id the delegatee must use**. To adopt another session's tickets,
 query with that session id. Access is by ticket number everywhere else.
 `list` requires the target session id — an agent must know which session it
