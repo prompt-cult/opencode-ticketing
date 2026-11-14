@@ -22,7 +22,9 @@ It is never rewritten — there is no rewrite action.
 - **Status is the only field that ever changes** — and the todo mirror
   writes it automatically: closing the todo item `N: …` closes ticket N.
   `ticket_status` covers the rest (owner-gated), including `superseded`:
-  a re-scope is a status change plus a comment naming the replacement.
+  a re-scope is a status change plus a comment naming the replacement — and
+  it marks the old ticket soft-deleted (hidden from lists unless
+  `include_deleted=true`).
 - **Nothing is ever deleted.** There is no delete action.
 
 Like a Jira issue: the description is the spec; the comment stream is the
@@ -51,7 +53,7 @@ ticket_session_id                                            YOUR current sessio
 ticket_comment id=N content="…"                             append one SHORT note (1000 max)
 ticket_status id=N session_id=<OWNER session id> status=…   the only mutation
 ticket_get id=N                                              read the ticket + comments
-ticket_list session_id=<session id> [status=] [type=|types=] one session's tickets (all=true: every session's)
+ticket_list session_id=<session id> [status=] [type=|types=] [include_deleted=true] one session's tickets (all=true: every session's; deleted hidden unless include_deleted)
 ticket_rules / ticket_help                                  the delegatee banner / the whole contract
 ```
 

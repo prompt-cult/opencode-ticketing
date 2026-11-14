@@ -42,6 +42,7 @@ export interface TicketRow {
   todo: string
   status: string
   type: string
+  deleted: number
   rollout_id: string
   last_actor: string | null
   md_content: string | null
@@ -77,6 +78,7 @@ export interface ListFilter {
   status?: string
   type?: string
   types?: string[]
+  includeDeleted?: boolean
   all?: boolean
 }
 
@@ -123,14 +125,18 @@ export class TicketStore {
     this.migrate()
   }
 
-  // Idempotent additive migration (issue #25): the type column with a NOT
-  // NULL default 'unknown' backfills existing rows; legacy code that does
-  // not know the column keeps working (verified on a hot copy). The index
-  // creation is naturally idempotent via IF NOT EXISTS.
+  // Idempotent additive migrations (issue #25, #29): the type column with a
+  // NOT NULL default 'unknown' and the soft-delete boolean deleted (NOT NULL
+  // DEFAULT 0) backfill existing rows; legacy code that does not know the
+  // columns keeps working (verified on a hot copy). Index creation is
+  // naturally idempotent via IF NOT EXISTS.
   private migrate() {
     const names = (this.db.query("PRAGMA table_info(ticket)").all() as any[]).map((r) => r.name)
     if (!names.includes("type")) {
       this.db.run(`ALTER TABLE ticket ADD COLUMN type TEXT NOT NULL DEFAULT 'unknown'`)
+    }
+    if (!names.includes("deleted")) {
+      this.db.run(`ALTER TABLE ticket ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`)
     }
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_ticket_type ON ticket(type)`)
   }
@@ -175,7 +181,7 @@ export class TicketStore {
   get(id: number): TicketRow | undefined {
     return (
       (this.db
-        .query("SELECT id, created_at, updated_at, todo, status, type, rollout_id, last_actor, md_content FROM ticket WHERE id = ?")
+        .query("SELECT id, created_at, updated_at, todo, status, type, deleted, rollout_id, last_actor, md_content FROM ticket WHERE id = ?")
         .get(id) as TicketRow | null) ?? undefined
     )
   }
@@ -202,7 +208,11 @@ export class TicketStore {
       where.push(`type IN (${filter.types.map(() => "?").join(", ")})`)
       params.push(...filter.types)
     }
-    const sql = `SELECT id, created_at, updated_at, todo, status, type, rollout_id, last_actor, md_content FROM ticket ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id`
+    // soft delete (issue #29): hidden by default, including all=true; includeDeleted reveals them
+    if (!filter.includeDeleted) {
+      where.push("deleted = 0")
+    }
+    const sql = `SELECT id, created_at, updated_at, todo, status, type, deleted, rollout_id, last_actor, md_content FROM ticket ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id`
     return this.db.query(sql).all(...params) as TicketRow[]
   }
 
@@ -215,9 +225,12 @@ export class TicketStore {
     const current = this.get(id)
     if (!current) return undefined
     this.assertOwner(current, input.rollout_id, "set_status")
+    // superseding (issue #29) marks the old ticket soft-deleted: it leaves the
+    // visible list but stays in the DB, recoverable with include_deleted.
+    const deleted = input.status === "superseded" ? 1 : current.deleted
     this.db.run(
-      `UPDATE ticket SET status = ?, last_actor = ?, updated_at = ? WHERE id = ?`,
-      [input.status, input.last_actor ?? current.last_actor, this.now(), id],
+      `UPDATE ticket SET status = ?, last_actor = ?, updated_at = ?, deleted = ? WHERE id = ?`,
+      [input.status, input.last_actor ?? current.last_actor, this.now(), deleted, id],
     )
     return this.get(id)
   }
@@ -354,6 +367,7 @@ export const LIST_JTD = {
     status: { enum: ["pending", "in_progress", "completed", "cancelled", "superseded"] },
     type: { enum: [...TYPE_ENUM] },
     types: { elements: { type: "string" } },
+    include_deleted: { type: "boolean" },
     all: { type: "boolean" },
   },
 }
@@ -430,8 +444,11 @@ export function jtdValidateList(instance: any) {
     if ("types" in instance && instance["types"] !== undefined) {
       if (!Array.isArray(instance["types"]) || instance["types"].some((t: any) => typeof t !== "string")) e.push({ instancePath: "/types", schemaPath: "/optionalProperties/types/elements/type" })
     }
+    if ("include_deleted" in instance && instance["include_deleted"] !== undefined) {
+      if (typeof instance["include_deleted"] !== "boolean") e.push({ instancePath: "/include_deleted", schemaPath: "/optionalProperties/include_deleted/type" })
+    }
     for (const k in instance) {
-      if (k !== "all" && k !== "session_id" && k !== "status" && k !== "type" && k !== "types") e.push({ instancePath: "/" + k, schemaPath: "" })
+      if (k !== "all" && k !== "session_id" && k !== "status" && k !== "type" && k !== "types" && k !== "include_deleted") e.push({ instancePath: "/" + k, schemaPath: "" })
     }
   }
   return e
@@ -558,6 +575,7 @@ export const LIST_INPUT = {
     status: { type: "string", description: "pending | in_progress | completed | cancelled | superseded (filter)" },
     type: { type: "string", description: `filter by type (${TYPE_ENUM.join("|")})` },
     types: { type: "array", items: { type: "string" }, description: `filter by many types (e.g. task,milestone)` },
+    include_deleted: { type: "boolean", description: "include soft-deleted tickets (default: excluded)" },
     all: { type: "boolean", description: "list every session's tickets (instead of one session's)" },
   },
 }
@@ -653,9 +671,10 @@ string to spell wrongly; each tool's schema declares its required params:
   delegatee, to query another session's tickets, to adopt.
 - ticket_get id=N -> the row + its comments (chronological).
 - ticket_list session_id=<session id> [status=<status>] [type=<type> |
-  types=a,b] -> ONE session's tickets; type filters a single type, types
-  many; all=true -> every session's. The session id is required — an agent
-  must know which session it is querying.
+  types=a,b] [include_deleted=true] -> ONE session's tickets; type filters a
+  single type, types many; all=true -> every session's. Soft-deleted tickets
+  are hidden unless include_deleted=true. The session id is required — an
+  agent must know which session it is querying.
 - ticket_comment id=N content="..." -> the ONLY write after creation: a
   SHORT go/no-go note — done / not done / blocked — 1000 chars max. Long
   reports NEVER go on the ticket: detail lives in your final response (or a
@@ -664,7 +683,8 @@ string to spell wrongly; each tool's schema declares its required params:
 - ticket_status id=N session_id=<OWNER session id> status=<pending|
   in_progress|completed|cancelled|superseded> -> the ONLY mutation.
   Owner-gated. The todo mirror sets ticket N's status automatically whenever
-  the todo item "N: …" changes.
+  the todo item "N: …" changes. Setting superseded marks the old ticket
+  soft-deleted (hidden from lists; include_deleted=true reveals it).
 - ticket_rules -> the DELEGATEE's banner (its second call, after
   ticket_get).
 - ticket_help -> this text.
@@ -698,8 +718,9 @@ is the COMPLETE call — your received values kept, the missing ones filled
 verbatim (fill any "<fill: …>" placeholder) and the call succeeds.
 
 Mark-complete vs drop: a subagent MARKS its todo item / the ticket done; only
-the ORCHESTRATOR removes todo items. Nothing is ever deleted — there is no
-delete action. Never read the SQLite file directly — the tools are the API.`
+the ORCHESTRATOR removes todo items. Nothing is ever hard-deleted — soft
+delete (superseded) hides a ticket from lists while keeping it in the DB.
+Never read the SQLite file directly — the tools are the API.`
 }
 
 function rulesText(): string {
@@ -814,7 +835,7 @@ export async function executeList(args: any, context: any): Promise<{ content: s
       corrected,
     )
   try {
-    return ok(s.list({ status: args.status, rollout_id: args.session_id, type: args.type, types: args.types, all: args.all }).map(rowWire))
+    return ok(s.list({ status: args.status, rollout_id: args.session_id, type: args.type, types: args.types, includeDeleted: args.include_deleted, all: args.all }).map(rowWire))
   } catch (e) {
     return fail("E_LIST_FAILED", (e as Error).message, { session_id: args.session_id ?? "<session id>", all: args.all })
   }
