@@ -25,10 +25,10 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 ## 谁做什么（委派）
 
 - **delegator**（提出 ticket 的主 agent）创建它：
-  `ticket_add rollout_id=<它的 session id> todo="..."`（+ 计划作为
-  `md_content`,只写一次）。它拥有 session id。它**不**调用
-  `ticket_rules` —— 规则不是给它的。返回后它审查 diff、跑测试、
-  提交。
+  `ticket_add todo="..."`（+ 计划作为 `md_content`,只写一次）。所有者是
+  YOUR session id,自动取自 `$OPENCODE_SESSION_ID`。它拥有 session id。
+  它**不**调用 `ticket_rules` —— 规则不是给它的。返回后它审查 diff、
+  跑测试、提交。
 - **delegatee**（被启动的 subagent）只拿到 ticket 编号。它的前两个调用
   都是读取：`ticket_get id=N`（完整指令）,然后 `ticket_rules`。它
   **从不编辑 ticket** —— 它以评论报告（`ticket_comment`）,完成时用
@@ -39,12 +39,13 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 ## 工具面
 
 ```
-ticket_add rollout_id=<session id> todo="…" [md_content=spec]   创建不可变 ticket
-ticket_comment id=N content="…"                                 追加一条简短便签（最多 1000）
-ticket_status id=N rollout_id=<所有者 session id> status=…       唯一的变更
-ticket_get id=N                                                  读 ticket + 评论
-ticket_list rollout_id=<session id> [status=]                    一个 session 的 tickets（all=true:所有 session 的）
-ticket_rules / ticket_help                                       delegatee 横幅 / 完整契约
+ticket_add todo="…" [md_content=spec]                       在 YOUR session id（$OPENCODE_SESSION_ID）下创建不可变 ticket
+ticket_session_id                                             YOUR 当前 session id
+ticket_comment id=N content="…"                              追加一条简短便签（最多 1000）
+ticket_status id=N session_id=<所有者 session id> status=…   唯一的变更
+ticket_get id=N                                               读 ticket + 评论
+ticket_list session_id=<session id> [status=]                一个 session 的 tickets（all=true:所有 session 的）
+ticket_rules / ticket_help                                   delegatee 横幅 / 完整契约
 ```
 
 评论是简短的 go/no-go 便签 —— done / not done / blocked。长报告绝不
@@ -56,12 +57,12 @@ ticket_rules / ticket_help                                       delegatee 横�
 非法值一律拒绝。每次失败都返回结构化信封
 `{code, message, corrected_call}` —— 原样重发 corrected_call 即可成功。
 
-`rollout_id` 就是 session id —— 只有一个 id。agent **必须知道自己的
-session id**:`add` 和 `list` 默认用它。委派者把工作交给 delegatee 时
-**指明 delegatee 必须使用的 session id**。要认领另一个 session 的
-tickets,用那个 session id 查询。其余操作按 ticket 编号进行。`list`
-必须带 session id —— agent 必须知道自己在查哪个 session（`all=true`
-列出所有 session 的）。
+`session_id` 就是 opencode session id —— 只有一个 id。其规范来源是环境变量
+`$OPENCODE_SESSION_ID`；`ticket_session_id` 返回它。`add` 自动用它 ——
+没有所有者参数。委派者把工作交给 delegatee 时**指明 delegatee 必须使用的
+session id**。要认领另一个 session 的 tickets,用那个 session id 查询。
+其余操作按 ticket 编号进行。`list` 必须带目标 session id —— agent 必须
+知道自己在查哪个 session（`all=true` 列出所有 session 的）。
 
 状态：`pending | in_progress | completed | cancelled | superseded`。
 关闭 todo 项 `N: …` 会自动设置 ticket N 的状态（插件镜像每次

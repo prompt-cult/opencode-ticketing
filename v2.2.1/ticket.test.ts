@@ -15,6 +15,7 @@ import {
   executeStatus,
   executeRules,
   executeHelp,
+  executeSession,
   parseEnvelope,
   TicketStore,
   ticketDbPath,
@@ -23,6 +24,7 @@ import {
   LIST_INPUT,
   COMMENT_INPUT,
   STATUS_INPUT,
+  SESSION_INPUT,
   ADD_JTD,
   GET_JTD,
   LIST_JTD,
@@ -46,31 +48,56 @@ function envelope(content: string) {
   return e!
 }
 
-async function add(todo: string, rollout_id: string, md_content?: string) {
-  const res = await executeAdd({ todo, rollout_id, md_content }, { sessionID: rollout_id })
-  return JSON.parse(res.content)
+// add drives the documented surface: ticket_add takes NO session-id param —
+// the owner comes from $OPENCODE_SESSION_ID (issue #26).
+async function add(todo: string, owner: string, md_content?: string) {
+  const prev = process.env.OPENCODE_SESSION_ID
+  process.env.OPENCODE_SESSION_ID = owner
+  try {
+    const res = await executeAdd({ todo, md_content }, { sessionID: owner })
+    return JSON.parse(res.content)
+  } finally {
+    process.env.OPENCODE_SESSION_ID = prev
+  }
+}
+
+async function withoutSessionId<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.OPENCODE_SESSION_ID
+  delete process.env.OPENCODE_SESSION_ID
+  try {
+    return await fn()
+  } finally {
+    if (prev !== undefined) process.env.OPENCODE_SESSION_ID = prev
+  }
 }
 
 // ─── The schemas make misuse unrepresentable ────────────────────────────────
 
 test("each tool's schema declares its required params and rejects junk keys", () => {
-  expect(ADD_INPUT.required).toEqual(["rollout_id", "todo"])
+  // add: NO session-id param — the owner comes from $OPENCODE_SESSION_ID
+  expect(ADD_INPUT.required).toEqual(["todo"])
   expect(ADD_INPUT.additionalProperties).toBe(false)
+  expect(ADD_INPUT.properties.rollout_id).toBeUndefined()
   expect(GET_INPUT.required).toEqual(["id"])
   expect(GET_INPUT.additionalProperties).toBe(false)
   // list: all three properties optional in the schema — a top-level oneOf
-  // breaks strict upstreams (issue #22), so the "rollout_id or all" rule is
+  // breaks strict upstreams (issue #22), so the "session_id or all" rule is
   // enforced by executeList at runtime, not by the exposed schema.
   expect(LIST_INPUT.type).toBe("object")
   for (const kw of ["oneOf", "anyOf", "allOf", "enum", "const", "not"] as const)
     expect(LIST_INPUT[kw]).toBeUndefined()
   expect(LIST_INPUT.required).toBeUndefined()
   expect(LIST_INPUT.additionalProperties).toBe(false)
+  expect(LIST_INPUT.properties.session_id).toBeDefined()
   expect(COMMENT_INPUT.required).toEqual(["id", "content"])
   expect(COMMENT_INPUT.additionalProperties).toBe(false)
   expect(COMMENT_INPUT.properties.content.maxLength).toBe(1000)
-  expect(STATUS_INPUT.required).toEqual(["id", "rollout_id", "status"])
+  expect(STATUS_INPUT.required).toEqual(["id", "session_id", "status"])
   expect(STATUS_INPUT.additionalProperties).toBe(false)
+  expect(STATUS_INPUT.properties.rollout_id).toBeUndefined()
+  // session: no params at all
+  expect(SESSION_INPUT.additionalProperties).toBe(false)
+  expect(SESSION_INPUT.required).toBeUndefined()
 })
 
 // ─── The envelope: every failure path, and the verbatim-re-emit acceptance ──
@@ -79,9 +106,9 @@ test("the missing-rollout_id envelope self-heals: corrected_call carries the REA
   const created = await add("self-heal test", "ses_ownerX")
   // The call arrives without the owner session id.
   const e1 = envelope((await executeStatus({ id: created.id, status: "completed" }, { sessionID: "ses_delegatee" })).content)
-  expect(e1.code).toBe("E_STATUS_MISSING_ROLLOUT_ID")
-  expect(e1.message).toContain("ticket_status requires 'rollout_id'")
-  expect(e1.corrected_call.rollout_id).toBe("ses_ownerX")
+  expect(e1.code).toBe("E_STATUS_MISSING_SESSION_ID")
+  expect(e1.message).toContain("ticket_status requires 'session_id'")
+  expect(e1.corrected_call.session_id).toBe("ses_ownerX")
   expect(e1.corrected_call.id).toBe(created.id)
   expect(e1.corrected_call.status).toBe("completed")
   // ACCEPTANCE: re-emit corrected_call verbatim — the call succeeds.
@@ -94,12 +121,12 @@ test("the missing-rollout_id envelope self-heals: corrected_call carries the REA
 test("the non-owner refusal envelope self-heals the same way: corrected_call names the owner; verbatim re-emit succeeds", async () => {
   const created = await add("refusal test", "ses_ownerY")
   const e1 = envelope(
-    (await executeStatus({ id: created.id, rollout_id: "ses_wrong", status: "superseded" }, { sessionID: "ses_delegatee" })).content,
+    (await executeStatus({ id: created.id, session_id: "ses_wrong", status: "superseded" }, { sessionID: "ses_delegatee" })).content,
   )
   expect(e1.code).toBe("E_STATUS_REFUSED")
   expect(e1.message).toContain("refused")
   expect(e1.message).toContain("ses_ownerY")
-  expect(e1.corrected_call.rollout_id).toBe("ses_ownerY")
+  expect(e1.corrected_call.session_id).toBe("ses_ownerY")
   const retry = JSON.parse((await executeStatus(e1.corrected_call, { sessionID: "ses_delegatee" })).content)
   expect(retry.status).toBe("superseded")
 })
@@ -107,11 +134,13 @@ test("the non-owner refusal envelope self-heals the same way: corrected_call nam
 test("every validation failure returns {code, message, corrected_call}; each missing param has its stable code", async () => {
   const created = await add("envelope test", "ses_ownerZ")
 
-  const addNoTodo = envelope((await executeAdd({ rollout_id: "ses_x" }, {})).content)
+  const addNoTodo = envelope((await executeAdd({}, {})).content)
   expect(addNoTodo.code).toBe("E_ADD_MISSING_TODO")
   expect(addNoTodo.corrected_call.todo).toContain("<fill:")
-  const addNoOwner = envelope((await executeAdd({ todo: "x" }, {})).content)
-  expect(addNoOwner.code).toBe("E_ADD_MISSING_ROLLOUT_ID")
+  // ticket_add takes NO owner param: with $OPENCODE_SESSION_ID unset it
+  // fails E_ADD_NO_SESSION_ID; with it set, the env is the owner.
+  const addNoSession = await withoutSessionId(() => executeAdd({ todo: "x" }, {}))
+  expect(envelope(addNoSession.content).code).toBe("E_ADD_NO_SESSION_ID")
 
   const getNoId = envelope((await executeGet({}, {})).content)
   expect(getNoId.code).toBe("E_GET_MISSING_ID")
@@ -119,7 +148,7 @@ test("every validation failure returns {code, message, corrected_call}; each mis
   expect(getMissing.code).toBe("E_NO_TICKET")
 
   const listBare = envelope((await executeList({}, {})).content)
-  expect(listBare.code).toBe("E_LIST_MISSING_ROLLOUT_ID")
+  expect(listBare.code).toBe("E_LIST_MISSING_SESSION_ID")
   expect(listBare.message).toContain("all=true")
 
   const cmtNoId = envelope((await executeComment({ content: "done" }, {})).content)
@@ -129,12 +158,12 @@ test("every validation failure returns {code, message, corrected_call}; each mis
   const cmtMissing = envelope((await executeComment({ id: 424242, content: "x" }, {})).content)
   expect(cmtMissing.code).toBe("E_NO_TICKET")
 
-  const stNoId = envelope((await executeStatus({ rollout_id: "s", status: "pending" }, {})).content)
+  const stNoId = envelope((await executeStatus({ session_id: "s", status: "pending" }, {})).content)
   expect(stNoId.code).toBe("E_STATUS_MISSING_ID")
-  const stNoStatus = envelope((await executeStatus({ id: created.id, rollout_id: "ses_ownerZ" }, {})).content)
+  const stNoStatus = envelope((await executeStatus({ id: created.id, session_id: "ses_ownerZ" }, {})).content)
   expect(stNoStatus.code).toBe("E_STATUS_MISSING_STATUS")
   const stBad = envelope(
-    (await executeStatus({ id: created.id, rollout_id: "ses_ownerZ", status: "bogus" }, {})).content,
+    (await executeStatus({ id: created.id, session_id: "ses_ownerZ", status: "bogus" }, {})).content,
   )
   expect(stBad.code).toBe("E_STATUS_BAD_STATUS")
   expect(stBad.message).toContain("is not one of the legal values")
@@ -174,10 +203,10 @@ test("add persists the body once; comments append one at a time; get renders bot
 test("list: one session by id, status filter combines, all=true lists every session", async () => {
   await add("list a", "ses_listA")
   await add("list b", "ses_listB")
-  const mine = JSON.parse((await executeList({ rollout_id: "ses_listA" }, {})).content)
+  const mine = JSON.parse((await executeList({ session_id: "ses_listA" }, {})).content)
   expect(mine.length).toBeGreaterThan(0)
   expect(mine.every((r: { rollout_id: string }) => r.rollout_id === "ses_listA")).toBe(true)
-  const minePending = JSON.parse((await executeList({ rollout_id: "ses_listA", status: "pending" }, {})).content)
+  const minePending = JSON.parse((await executeList({ session_id: "ses_listA", status: "pending" }, {})).content)
   expect((minePending as any[]).every((r) => r.status === "pending")).toBe(true)
   const everyone = JSON.parse((await executeList({ all: true }, {})).content)
   expect((everyone as any[]).some((r) => r.rollout_id === "ses_listA")).toBe(true)
@@ -188,16 +217,18 @@ test("list: one session by id, status filter combines, all=true lists every sess
 
 test("help states the whole contract: tools, doctrine, envelope; no action strings", async () => {
   const content = (await executeHelp()).content
-  for (const tool of ["ticket_add", "ticket_get", "ticket_list", "ticket_comment", "ticket_status", "ticket_rules", "ticket_help"]) {
+  for (const tool of ["ticket_add", "ticket_session_id", "ticket_get", "ticket_list", "ticket_comment", "ticket_status", "ticket_rules", "ticket_help"]) {
     expect(content).toContain(tool)
   }
-  expect(content).toContain("rollout_id IS the session id")
-  expect(content).toContain("You MUST know your own session id")
+  expect(content).toContain("session_id IS the opencode session id")
+  expect(content).toContain("$OPENCODE_SESSION_ID")
+  expect(content).toContain("ticket_add fills it in automatically")
+  expect(content).toContain("no owner parameter to spell wrongly")
   expect(content).toContain("NAME the session id the delegatee must use")
   expect(content).toContain("Too simple to get wrong")
   expect(content).toContain("corrected_call")
   expect(content).toContain("IMMUTABLE record")
-  expect(content).toContain("one id, no other")
+  expect(content).toContain("one id, no")
 })
 
 test("the rules banner opens with the division of labour, immutability, no-prereq, and the envelope recovery", async () => {
@@ -217,12 +248,13 @@ test("the rules banner opens with the division of labour, immutability, no-prere
 // ─── Red/Green: the RFC 8927 validators gate every handler (issue #18) ──────
 
 test("the RFC 8927 validators: the legal set is exact — unit level", () => {
-  // add: rollout_id+todo required, md_content optional, junk rejected
-  expect(jtdValidateAdd({ rollout_id: "s", todo: "t" })).toEqual([])
-  expect(jtdValidateAdd({ rollout_id: "s", todo: "t", md_content: "m" })).toEqual([])
-  expect(jtdValidateAdd({ rollout_id: "s", todo: "t", junk: 1 })).toEqual([{ instancePath: "/junk", schemaPath: "" }])
-  expect(jtdValidateAdd({ rollout_id: "s" })).toEqual([{ instancePath: "", schemaPath: "/properties/todo" }])
-  expect(jtdValidateAdd({ rollout_id: 7, todo: "t" })).toEqual([{ instancePath: "/rollout_id", schemaPath: "/properties/rollout_id/type" }])
+  // add: todo required, md_content optional; rollout_id is NO LONGER legal
+  expect(jtdValidateAdd({ todo: "t" })).toEqual([])
+  expect(jtdValidateAdd({ todo: "t", md_content: "m" })).toEqual([])
+  expect(jtdValidateAdd({ todo: "t", junk: 1 })).toEqual([{ instancePath: "/junk", schemaPath: "" }])
+  expect(jtdValidateAdd({})).toEqual([{ instancePath: "", schemaPath: "/properties/todo" }])
+  expect(jtdValidateAdd({ todo: 7 })).toEqual([{ instancePath: "/todo", schemaPath: "/properties/todo/type" }])
+  expect(jtdValidateAdd({ todo: "t", rollout_id: "s" })).toEqual([{ instancePath: "/rollout_id", schemaPath: "" }])
   expect(jtdValidateAdd(null)).toEqual([{ instancePath: "", schemaPath: "/properties" }])
   // get: id required, uint32
   expect(jtdValidateGet({ id: 5 })).toEqual([])
@@ -230,22 +262,22 @@ test("the RFC 8927 validators: the legal set is exact — unit level", () => {
   expect(jtdValidateGet({ id: 1.5 })).toEqual([{ instancePath: "/id", schemaPath: "/properties/id/type" }])
   // list: all optional individually
   expect(jtdValidateList({})).toEqual([])
-  expect(jtdValidateList({ rollout_id: "s", status: "pending", all: true })).toEqual([])
+  expect(jtdValidateList({ session_id: "s", status: "pending", all: true })).toEqual([])
   expect(jtdValidateList({ status: "bogus" }))[0]
   expect(jtdValidateList({ status: "bogus" })[0].schemaPath).toBe("/optionalProperties/status/enum")
   // comment: id+content required
   expect(jtdValidateComment({ id: 1, content: "done" })).toEqual([])
   expect(jtdValidateComment({ content: "done" })[0].schemaPath).toBe("/properties/id")
-  // status: id+rollout_id+status required, status enum enforced
-  expect(jtdValidateStatus({ id: 1, rollout_id: "s", status: "superseded" })).toEqual([])
-  expect(jtdValidateStatus({ id: 1, rollout_id: "s", status: "bogus" })[0].schemaPath).toBe("/properties/status/enum")
-  expect(jtdValidateStatus({ id: 1, status: "pending" })[0].schemaPath).toBe("/properties/rollout_id")
-  // none: rules/help take no params at all
+  // status: id+session_id+status required, status enum enforced
+  expect(jtdValidateStatus({ id: 1, session_id: "s", status: "superseded" })).toEqual([])
+  expect(jtdValidateStatus({ id: 1, session_id: "s", status: "bogus" })[0].schemaPath).toBe("/properties/status/enum")
+  expect(jtdValidateStatus({ id: 1, status: "pending" })[0].schemaPath).toBe("/properties/session_id")
+  // none: rules/help/session take no params at all
   expect(jtdValidateNone({})).toEqual([])
   expect(jtdValidateNone({ junk: 1 })).toEqual([{ instancePath: "/junk", schemaPath: "" }])
   // an explicitly-undefined key is ABSENT in JSON semantics — never a type error
-  expect(jtdValidateAdd({ rollout_id: "s", todo: "t", md_content: undefined })).toEqual([])
-  expect(jtdValidateStatus({ id: undefined, rollout_id: "s", status: "pending" })[0].schemaPath).toBe("/properties/id")
+  expect(jtdValidateAdd({ todo: "t", md_content: undefined })).toEqual([])
+  expect(jtdValidateStatus({ id: undefined, session_id: "s", status: "pending" })[0].schemaPath).toBe("/properties/id")
 })
 
 test("the RFC 8927 sets and the harness-facing JSON Schema declare the same legal params", () => {
@@ -262,11 +294,40 @@ test("the RFC 8927 sets and the harness-facing JSON Schema declare the same lega
 test("GREEN TARGET: a junk parameter is rejected before the store — E_ADD_EXTRA_PROPERTY, zero side effects", async () => {
   const before = JSON.parse((await executeList({ all: true }, {})).content).length
   // 'before' is the historic junk param models used to inject
-  const e = envelope((await executeAdd({ rollout_id: "ses_junk", todo: "t", before: "2020-01-01" }, {})).content)
+  const e = envelope((await executeAdd({ todo: "t", before: "2020-01-01" }, {})).content)
   expect(e.code).toBe("E_ADD_EXTRA_PROPERTY")
   expect(e.message).toContain("'before' is not a legal parameter")
   const after = JSON.parse((await executeList({ all: true }, {})).content).length
   expect(after).toBe(before) // rejected BEFORE the store: nothing was created
+})
+
+test("GREEN TARGET: passing a session id to ticket_add is rejected — the env is the owner (E_ADD_EXTRA_PROPERTY, zero side effects)", async () => {
+  const before = JSON.parse((await executeList({ all: true }, {})).content).length
+  const e = envelope((await executeAdd({ todo: "t", rollout_id: "ses_handrolled" }, {})).content)
+  expect(e.code).toBe("E_ADD_EXTRA_PROPERTY")
+  expect(e.message).toContain("'rollout_id' is not a legal parameter")
+  const after = JSON.parse((await executeList({ all: true }, {})).content).length
+  expect(after).toBe(before) // rejected BEFORE the store: nothing was created
+})
+
+test("ticket_add derives the owner from $OPENCODE_SESSION_ID — no owner param", async () => {
+  const created = await add("env owner test", "ses_envowner")
+  expect(created.session_id).toBe("ses_envowner")
+  expect(created.ticket.rollout_id).toBe("ses_envowner")
+  expect(created.id).toBeGreaterThan(0)
+})
+
+test("ticket_session_id returns the current session id; without $OPENCODE_SESSION_ID it fails E_SESSION_NO_ID", async () => {
+  const prev = process.env.OPENCODE_SESSION_ID
+  process.env.OPENCODE_SESSION_ID = "ses_sessionprobe"
+  try {
+    const res = JSON.parse((await executeSession()).content)
+    expect(res.session_id).toBe("ses_sessionprobe")
+  } finally {
+    process.env.OPENCODE_SESSION_ID = prev
+  }
+  const missing = envelope((await withoutSessionId(() => executeSession())).content)
+  expect(missing.code).toBe("E_SESSION_NO_ID")
 })
 
 test("GREEN TARGET: a wrong-typed id is rejected by JTD — E_GET_BAD_ID / E_COMMENT_BAD_ID", async () => {
@@ -279,7 +340,7 @@ test("GREEN TARGET: a wrong-typed id is rejected by JTD — E_GET_BAD_ID / E_COM
 
 test("GREEN TARGET: a bogus status is rejected by the JTD enum — E_STATUS_BAD_STATUS with the legal values; corrected_call re-emitted verbatim succeeds", async () => {
   const created = await add("enum gate test", "ses_enum")
-  const e = envelope((await executeStatus({ id: created.id, rollout_id: "ses_enum", status: "bogus" }, {})).content)
+  const e = envelope((await executeStatus({ id: created.id, session_id: "ses_enum", status: "bogus" }, {})).content)
   expect(e.code).toBe("E_STATUS_BAD_STATUS")
   expect(e.message).toContain("is not one of the legal values")
   expect(e.message).toContain("pending|in_progress|completed|cancelled|superseded")
@@ -290,7 +351,7 @@ test("GREEN TARGET: a bogus status is rejected by the JTD enum — E_STATUS_BAD_
 
 test("GREEN TARGET: a missing required param is rejected by JTD with the stable code — E_STATUS_MISSING_STATUS", async () => {
   const created = await add("jtd missing test", "ses_jtdm")
-  const e = envelope((await executeStatus({ id: created.id, rollout_id: "ses_jtdm" }, {})).content)
+  const e = envelope((await executeStatus({ id: created.id, session_id: "ses_jtdm" }, {})).content)
   expect(e.code).toBe("E_STATUS_MISSING_STATUS")
   expect(e.message).toContain("ticket_status requires 'status'")
 })
