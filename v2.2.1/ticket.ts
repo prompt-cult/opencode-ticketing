@@ -41,6 +41,7 @@ export interface TicketRow {
   updated_at: string
   todo: string
   status: string
+  type: string
   rollout_id: string
   last_actor: string | null
   md_content: string | null
@@ -60,6 +61,7 @@ export interface TicketComment {
 export interface AddInput {
   todo: string
   rollout_id: string
+  type?: string
   md_content?: string | null
 }
 
@@ -73,10 +75,15 @@ export interface SetStatusInput {
 export interface ListFilter {
   rollout_id?: string
   status?: string
+  type?: string
+  types?: string[]
   all?: boolean
 }
 
 const STATUSES = new Set(["pending", "in_progress", "completed", "cancelled", "superseded"])
+
+export const TYPE_ENUM = ["unknown", "task", "bug", "feature", "chore", "milestone"] as const
+const TYPES = new Set<string>(TYPE_ENUM)
 
 // The ticket database is the shared registry of tickets, so it lives in the
 // opencode config tree, NOT in any repo: one database, every repo. Override
@@ -113,6 +120,19 @@ export class TicketStore {
         FOREIGN KEY (ticket_id) REFERENCES ticket(id)
       );
     `)
+    this.migrate()
+  }
+
+  // Idempotent additive migration (issue #25): the type column with a NOT
+  // NULL default 'unknown' backfills existing rows; legacy code that does
+  // not know the column keeps working (verified on a hot copy). The index
+  // creation is naturally idempotent via IF NOT EXISTS.
+  private migrate() {
+    const names = (this.db.query("PRAGMA table_info(ticket)").all() as any[]).map((r) => r.name)
+    if (!names.includes("type")) {
+      this.db.run(`ALTER TABLE ticket ADD COLUMN type TEXT NOT NULL DEFAULT 'unknown'`)
+    }
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_ticket_type ON ticket(type)`)
   }
 
   private now(): string {
@@ -130,7 +150,7 @@ export class TicketStore {
   private assertOwner(row: TicketRow, rolloutId: string, action: string) {
     if (row.rollout_id !== rolloutId)
       throw new Error(
-        `${action} refused: ticket ${row.id} belongs to rollout "${row.rollout_id}", not "${rolloutId}"`,
+        `${action} refused: ticket ${row.id} belongs to session "${row.rollout_id}", not "${rolloutId}"`,
       )
   }
 
@@ -141,11 +161,13 @@ export class TicketStore {
   add(input: AddInput): TicketRow {
     if (!input.todo) throw new Error("add requires 'todo' (the one-line summary)")
     if (!input.rollout_id) throw new Error("add requires 'rollout_id' (your session id)")
+    const type = input.type ?? "unknown"
+    if (!TYPES.has(type)) throw new Error(`type must be one of ${TYPE_ENUM.join("|")}, got "${type}"`)
     const ts = this.now()
     this.db.run(
-      `INSERT INTO ticket (created_at, updated_at, todo, status, rollout_id, last_actor, md_content)
-       VALUES (?, ?, ?, 'pending', ?, NULL, ?)`,
-      [ts, ts, input.todo, input.rollout_id, input.md_content ?? null],
+      `INSERT INTO ticket (created_at, updated_at, todo, status, type, rollout_id, last_actor, md_content)
+       VALUES (?, ?, ?, 'pending', ?, ?, NULL, ?)`,
+      [ts, ts, input.todo, type, input.rollout_id, input.md_content ?? null],
     )
     return this.get(Number((this.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id))!
   }
@@ -153,7 +175,7 @@ export class TicketStore {
   get(id: number): TicketRow | undefined {
     return (
       (this.db
-        .query("SELECT id, created_at, updated_at, todo, status, rollout_id, last_actor, md_content FROM ticket WHERE id = ?")
+        .query("SELECT id, created_at, updated_at, todo, status, type, rollout_id, last_actor, md_content FROM ticket WHERE id = ?")
         .get(id) as TicketRow | null) ?? undefined
     )
   }
@@ -172,7 +194,15 @@ export class TicketStore {
       where.push("status = ?")
       params.push(filter.status)
     }
-    const sql = `SELECT id, created_at, updated_at, todo, status, rollout_id, last_actor, md_content FROM ticket ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id`
+    if (filter.type !== undefined) {
+      where.push("type = ?")
+      params.push(filter.type)
+    }
+    if (filter.types?.length) {
+      where.push(`type IN (${filter.types.map(() => "?").join(", ")})`)
+      params.push(...filter.types)
+    }
+    const sql = `SELECT id, created_at, updated_at, todo, status, type, rollout_id, last_actor, md_content FROM ticket ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id`
     return this.db.query(sql).all(...params) as TicketRow[]
   }
 
@@ -271,6 +301,19 @@ function ok(payload: unknown): { content: string } {
   return { content: JSON.stringify(payload, null, 2) }
 }
 
+// The DB column is rollout_id (private store detail); the VISIBLE surface is
+// session_id. Every row/comment that leaves a tool goes through these mappers
+// so no internal name ever leaks (issue #27).
+function rowWire(row: TicketRow) {
+  const { rollout_id, ...rest } = row
+  return { ...rest, session_id: rollout_id }
+}
+
+function commentWire(c: TicketComment) {
+  const { author_rollout_id, ...rest } = c
+  return { ...rest, author_session_id: author_rollout_id }
+}
+
 // Parsed envelope or null — for tests and callers that want the structure.
 export function parseEnvelope(content: string): { code: string; message: string; corrected_call: Record<string, unknown> } | null {
   try {
@@ -295,7 +338,10 @@ export function parseEnvelope(content: string): { code: string; message: string;
 
 export const ADD_JTD = {
   properties: { todo: { type: "string" } },
-  optionalProperties: { md_content: { type: "string" } },
+  optionalProperties: {
+    md_content: { type: "string" },
+    type: { enum: [...TYPE_ENUM] },
+  },
 }
 
 export const GET_JTD = { properties: { id: { type: "uint32" } } }
@@ -306,6 +352,8 @@ export const LIST_JTD = {
   optionalProperties: {
     session_id: { type: "string" },
     status: { enum: ["pending", "in_progress", "completed", "cancelled", "superseded"] },
+    type: { enum: [...TYPE_ENUM] },
+    types: { elements: { type: "string" } },
     all: { type: "boolean" },
   },
 }
@@ -336,8 +384,11 @@ export function jtdValidateAdd(instance: any) {
     if ("md_content" in instance && instance["md_content"] !== undefined) {
       if (typeof instance["md_content"] !== "string") e.push({ instancePath: "/md_content", schemaPath: "/optionalProperties/md_content/type" })
     }
+    if ("type" in instance && instance["type"] !== undefined) {
+      if (typeof instance["type"] !== "string" || !TYPE_ENUM.includes(instance["type"] as any)) e.push({ instancePath: "/type", schemaPath: "/optionalProperties/type/enum" })
+    }
     for (const k in instance) {
-      if (k !== "todo" && k !== "md_content") e.push({ instancePath: "/" + k, schemaPath: "" })
+      if (k !== "todo" && k !== "md_content" && k !== "type") e.push({ instancePath: "/" + k, schemaPath: "" })
     }
   }
   return e
@@ -373,8 +424,14 @@ export function jtdValidateList(instance: any) {
     if ("status" in instance && instance["status"] !== undefined) {
       if (typeof instance["status"] !== "string" || !STATUS_ENUM.includes(instance["status"])) e.push({ instancePath: "/status", schemaPath: "/optionalProperties/status/enum" })
     }
+    if ("type" in instance && instance["type"] !== undefined) {
+      if (typeof instance["type"] !== "string" || !TYPE_ENUM.includes(instance["type"] as any)) e.push({ instancePath: "/type", schemaPath: "/optionalProperties/type/enum" })
+    }
+    if ("types" in instance && instance["types"] !== undefined) {
+      if (!Array.isArray(instance["types"]) || instance["types"].some((t: any) => typeof t !== "string")) e.push({ instancePath: "/types", schemaPath: "/optionalProperties/types/elements/type" })
+    }
     for (const k in instance) {
-      if (k !== "all" && k !== "session_id" && k !== "status") e.push({ instancePath: "/" + k, schemaPath: "" })
+      if (k !== "all" && k !== "session_id" && k !== "status" && k !== "type" && k !== "types") e.push({ instancePath: "/" + k, schemaPath: "" })
     }
   }
   return e
@@ -445,7 +502,7 @@ function jtdFail(tool: string, errors: any[], corrected: Record<string, unknown>
   const missing = /^\/properties\/(\w+)$/.exec(first.schemaPath || "")
   if (missing)
     return fail(`E_${tool}_MISSING_${missing[1].toUpperCase()}`, `ticket_${lower} requires '${missing[1]}'`, corrected)
-  const bad = /^\/properties\/(\w+)\/(type|enum)$/.exec(first.schemaPath || "")
+  const bad = /^\/(?:properties|optionalProperties)\/(\w+)\/(type|enum)$/.exec(first.schemaPath || "")
   if (bad) {
     const what =
       bad[2] === "enum"
@@ -473,6 +530,7 @@ export const ADD_INPUT = {
   additionalProperties: false,
   properties: {
     todo: { type: "string", description: "one-line summary" },
+    type: { type: "string", description: `one of ${TYPE_ENUM.join("|")} — optional, default unknown` },
     md_content: { type: "string", description: "the spec, written ONCE at creation — the immutable body" },
   },
   required: ["todo"],
@@ -498,6 +556,8 @@ export const LIST_INPUT = {
   properties: {
     session_id: { type: "string", description: "the session id to query (required unless all=true)" },
     status: { type: "string", description: "pending | in_progress | completed | cancelled | superseded (filter)" },
+    type: { type: "string", description: `filter by type (${TYPE_ENUM.join("|")})` },
+    types: { type: "array", items: { type: "string" }, description: `filter by many types (e.g. task,milestone)` },
     all: { type: "boolean", description: "list every session's tickets (instead of one session's)" },
   },
 }
@@ -535,17 +595,19 @@ export const SESSION_INPUT = NONE_INPUT
 
 const ADD_DESC = `Create a ticket. The owner is YOUR session id — provided by
 the harness for every tool call; there is no owner parameter. todo = the
-one-line summary; md_content = the spec, written ONCE here (the immutable
-body). Returns the permanent ticket number N — use it as the todo item
-number ("N: …").`
+one-line summary; type = optional, one of ${TYPE_ENUM.join("|")} (default
+unknown); md_content = the spec, written ONCE here (the immutable body).
+Returns the permanent ticket number N — use it as the todo item number
+("N: …").`
 
 const GET_DESC = `Read one ticket: the row (id, created, updated, todo, status, owner session
 id, last_actor, md_content) plus its comments, oldest first. Reads are by
 ticket number — no session id needed.`
 
 const LIST_DESC = `List tickets. session_id = the session id to query (required — an agent
-must know which session it is querying); status filters; all=true lists
-every session's tickets instead.`
+must know which session it is querying); status filters; type filters by a
+single type, types by many (e.g. task,milestone); all=true lists every
+session's tickets instead.`
 
 const SESSION_DESC = `Return YOUR current session id — the harness-provided
 session id of this call, the id that owns any ticket you create and that
@@ -580,17 +642,20 @@ A ticket is an IMMUTABLE record with an APPEND-ONLY comment stream; STATUS is
 the only field that ever changes. One tool per action — there is no action
 string to spell wrongly; each tool's schema declares its required params:
 
-- ticket_add todo="one-line summary" [md_content=spec] -> creates the ticket
-  under YOUR session id, provided by the harness for every tool call — there
-  is no owner parameter to get wrong. Returns the permanent ticket number N.
-  The body (md_content) is written ONCE, here — never after.
+- ticket_add todo="one-line summary" [type=…] [md_content=spec] -> creates
+  the ticket under YOUR session id, provided by the harness for every tool
+  call — there is no owner parameter to get wrong. Returns the permanent
+  ticket number N. type is optional, one of unknown|task|bug|feature|chore|
+  milestone (default unknown). The body (md_content) is written ONCE, here —
+  never after.
 - ticket_session_id -> YOUR current session id (the harness-provided session
   id of this call). Call it when you must name your id — to hand to a
   delegatee, to query another session's tickets, to adopt.
 - ticket_get id=N -> the row + its comments (chronological).
-- ticket_list session_id=<session id> [status=<status>] -> ONE session's
-  tickets; all=true -> every session's. The session id is required — an
-  agent must know which session it is querying.
+- ticket_list session_id=<session id> [status=<status>] [type=<type> |
+  types=a,b] -> ONE session's tickets; type filters a single type, types
+  many; all=true -> every session's. The session id is required — an agent
+  must know which session it is querying.
 - ticket_comment id=N content="..." -> the ONLY write after creation: a
   SHORT go/no-go note — done / not done / blocked — 1000 chars max. Long
   reports NEVER go on the ticket: detail lives in your final response (or a
@@ -696,15 +761,18 @@ export async function executeAdd(args: any, context: any): Promise<{ content: st
     todo: args.todo ?? "<fill: one-line summary>",
   }
   if (args.md_content !== undefined) corrected.md_content = args.md_content
+  if (args.type !== undefined) corrected.type = args.type
   const jtd = jtdValidateAdd(args)
   if (jtd.length) return jtdFail("ADD", jtd, corrected)
   // JTD passes; empty strings are still missing semantically.
   if (!args.todo) return fail("E_ADD_MISSING_TODO", "ticket_add requires 'todo' (the one-line summary)", corrected)
+  if (args.type !== undefined && !TYPE_ENUM.includes(args.type))
+    return fail("E_ADD_BAD_TYPE", `ticket_add: 'type' must be one of ${TYPE_ENUM.join("|")}`, corrected)
   const sessionId = currentSessionId(context)
   if (!sessionId) return fail("E_ADD_NO_SESSION_ID", "no session id found — the harness provided no session id for this call; ticket_session_id reports it", corrected)
   try {
-    const row = s.add({ todo: args.todo, rollout_id: sessionId, md_content: args.md_content ?? null })
-    return ok({ session_id: row.rollout_id, id: row.id, ticket: row })
+    const row = s.add({ todo: args.todo, rollout_id: sessionId, type: args.type, md_content: args.md_content ?? null })
+    return ok({ session_id: row.rollout_id, id: row.id, ticket: rowWire(row) })
   } catch (e) {
     return fail("E_ADD_FAILED", (e as Error).message, corrected)
   }
@@ -727,10 +795,10 @@ export async function executeGet(args: any, context: any): Promise<{ content: st
   if (!row) return fail("E_NO_TICKET", `no ticket with number ${args.id}`, corrected)
   const comments = s.getComments(args.id)
   const rendered = comments.length
-    ? `${JSON.stringify(row, null, 2)}\n\n--- comments (chronological) ---\n${comments
+    ? `${JSON.stringify(rowWire(row), null, 2)}\n\n--- comments (chronological) ---\n${comments
         .map((c) => `[${c.created_at}] ${c.content}`)
         .join("\n")}`
-    : JSON.stringify(row, null, 2)
+    : JSON.stringify(rowWire(row), null, 2)
   return { content: rendered }
 }
 
@@ -746,7 +814,7 @@ export async function executeList(args: any, context: any): Promise<{ content: s
       corrected,
     )
   try {
-    return ok(s.list({ status: args.status, rollout_id: args.session_id, all: args.all }))
+    return ok(s.list({ status: args.status, rollout_id: args.session_id, type: args.type, types: args.types, all: args.all }).map(rowWire))
   } catch (e) {
     return fail("E_LIST_FAILED", (e as Error).message, { session_id: args.session_id ?? "<session id>", all: args.all })
   }
@@ -769,7 +837,7 @@ export async function executeComment(args: any, context: any): Promise<{ content
     )
   try {
     const c = s.appendComment(args.id, args.content, context?.sessionID ?? null)
-    return ok(c)
+    return ok(commentWire(c))
   } catch (e) {
     return fail("E_NO_TICKET", (e as Error).message.replace("appendComment: ", "ticket_comment: "), corrected)
   }
@@ -803,7 +871,7 @@ export async function executeStatus(args: any, context: any): Promise<{ content:
   try {
     const updated = s.setStatus(args.id, { rollout_id: args.session_id, status: args.status, last_actor: callerSession ?? null })
     if (!updated) return fail("E_NO_TICKET", `no ticket with number ${args.id}`, corrected)
-    return ok(updated)
+    return ok(rowWire(updated))
   } catch (e) {
     const msg = (e as Error).message
     if (msg.includes("status must be one of"))

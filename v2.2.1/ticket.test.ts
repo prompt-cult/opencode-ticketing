@@ -74,6 +74,9 @@ test("each tool's schema declares its required params and rejects junk keys", ()
   expect(LIST_INPUT.required).toBeUndefined()
   expect(LIST_INPUT.additionalProperties).toBe(false)
   expect(LIST_INPUT.properties.session_id).toBeDefined()
+  expect(ADD_INPUT.properties.type).toBeDefined()
+  expect(LIST_INPUT.properties.type).toBeDefined()
+  expect(LIST_INPUT.properties.types).toBeDefined()
   expect(COMMENT_INPUT.required).toEqual(["id", "content"])
   expect(COMMENT_INPUT.additionalProperties).toBe(false)
   expect(COMMENT_INPUT.properties.content.maxLength).toBe(1000)
@@ -87,7 +90,7 @@ test("each tool's schema declares its required params and rejects junk keys", ()
 
 // ─── The envelope: every failure path, and the verbatim-re-emit acceptance ──
 
-test("the missing-rollout_id envelope self-heals: corrected_call carries the REAL owner session id; re-emit verbatim succeeds", async () => {
+test("the missing-session_id envelope self-heals: corrected_call carries the REAL owner session id; re-emit verbatim succeeds", async () => {
   const created = await add("self-heal test", "ses_ownerX")
   // The call arrives without the owner session id.
   const e1 = envelope((await executeStatus({ id: created.id, status: "completed" }, { sessionID: "ses_delegatee" })).content)
@@ -177,7 +180,7 @@ test("add persists the body once; comments append one at a time; get renders bot
   for (const text of ["done", "blocked on env"]) {
     const c = JSON.parse((await executeComment({ id: created.id, content: text }, { sessionID: "ses_commenter" })).content)
     expect(c.ticket_id).toBe(created.id)
-    expect(c.author_rollout_id).toBe("ses_commenter")
+    expect(c.author_session_id).toBe("ses_commenter")
   }
   const got = (await executeGet({ id: created.id }, { sessionID: "ses_anyone" })).content
   expect(got).toContain('"md_content": "# the spec, written once"')
@@ -190,12 +193,12 @@ test("list: one session by id, status filter combines, all=true lists every sess
   await add("list b", "ses_listB")
   const mine = JSON.parse((await executeList({ session_id: "ses_listA" }, {})).content)
   expect(mine.length).toBeGreaterThan(0)
-  expect(mine.every((r: { rollout_id: string }) => r.rollout_id === "ses_listA")).toBe(true)
+  expect(mine.every((r: { session_id: string }) => r.session_id === "ses_listA")).toBe(true)
   const minePending = JSON.parse((await executeList({ session_id: "ses_listA", status: "pending" }, {})).content)
   expect((minePending as any[]).every((r) => r.status === "pending")).toBe(true)
   const everyone = JSON.parse((await executeList({ all: true }, {})).content)
-  expect((everyone as any[]).some((r) => r.rollout_id === "ses_listA")).toBe(true)
-  expect((everyone as any[]).some((r) => r.rollout_id === "ses_listB")).toBe(true)
+  expect((everyone as any[]).some((r) => r.session_id === "ses_listA")).toBe(true)
+  expect((everyone as any[]).some((r) => r.session_id === "ses_listB")).toBe(true)
 })
 
 // ─── The contract text ──────────────────────────────────────────────────────
@@ -210,6 +213,8 @@ test("help states the whole contract: tools, doctrine, envelope; no action strin
   expect(content).toContain("provided by the harness")
   expect(content).toContain("ticket_add fills it in automatically")
   expect(content).toContain("no owner parameter to spell wrongly")
+  expect(content).toContain("milestone")
+  expect(content).toContain("default unknown")
   expect(content).toContain("NAME the session id the delegatee must use")
   expect(content).toContain("Too simple to get wrong")
   expect(content).toContain("corrected_call")
@@ -237,6 +242,8 @@ test("the RFC 8927 validators: the legal set is exact — unit level", () => {
   // add: todo required, md_content optional; rollout_id is NO LONGER legal
   expect(jtdValidateAdd({ todo: "t" })).toEqual([])
   expect(jtdValidateAdd({ todo: "t", md_content: "m" })).toEqual([])
+  expect(jtdValidateAdd({ todo: "t", type: "milestone" })).toEqual([])
+  expect(jtdValidateAdd({ todo: "t", type: "bogus" })[0].schemaPath).toBe("/optionalProperties/type/enum")
   expect(jtdValidateAdd({ todo: "t", junk: 1 })).toEqual([{ instancePath: "/junk", schemaPath: "" }])
   expect(jtdValidateAdd({})).toEqual([{ instancePath: "", schemaPath: "/properties/todo" }])
   expect(jtdValidateAdd({ todo: 7 })).toEqual([{ instancePath: "/todo", schemaPath: "/properties/todo/type" }])
@@ -248,7 +255,8 @@ test("the RFC 8927 validators: the legal set is exact — unit level", () => {
   expect(jtdValidateGet({ id: 1.5 })).toEqual([{ instancePath: "/id", schemaPath: "/properties/id/type" }])
   // list: all optional individually
   expect(jtdValidateList({})).toEqual([])
-  expect(jtdValidateList({ session_id: "s", status: "pending", all: true })).toEqual([])
+  expect(jtdValidateList({ session_id: "s", status: "pending", type: "task", types: ["bug"], all: true })).toEqual([])
+  expect(jtdValidateList({ types: "oops" })[0].schemaPath).toBe("/optionalProperties/types/elements/type")
   expect(jtdValidateList({ status: "bogus" }))[0]
   expect(jtdValidateList({ status: "bogus" })[0].schemaPath).toBe("/optionalProperties/status/enum")
   // comment: id+content required
@@ -271,7 +279,7 @@ test("the RFC 8927 sets and the harness-facing JSON Schema declare the same lega
   expect(Object.keys(GET_JTD.properties).sort()).toEqual(GET_INPUT.required.slice().sort())
   expect(Object.keys(COMMENT_JTD.properties).sort()).toEqual(COMMENT_INPUT.required.slice().sort())
   expect(Object.keys(STATUS_JTD.properties).sort()).toEqual(STATUS_INPUT.required.slice().sort())
-  expect(Object.keys(ADD_JTD.optionalProperties!).sort()).toEqual(["md_content"])
+  expect(Object.keys(ADD_JTD.optionalProperties!).sort()).toEqual(["md_content", "type"])
   expect(Object.keys(LIST_JTD.optionalProperties!).sort()).toEqual(Object.keys(LIST_INPUT.properties).sort())
   expect(STATUS_JTD.properties.status.enum).toEqual(["pending", "in_progress", "completed", "cancelled", "superseded"])
   expect(COMMENT_INPUT.properties.content.maxLength).toBe(1000)
@@ -299,7 +307,7 @@ test("GREEN TARGET: passing a session id to ticket_add is rejected — the env i
 test("ticket_add derives the owner from context.sessionID — no owner param", async () => {
   const created = await add("env owner test", "ses_envowner")
   expect(created.session_id).toBe("ses_envowner")
-  expect(created.ticket.rollout_id).toBe("ses_envowner")
+  expect(created.ticket.session_id).toBe("ses_envowner")
   expect(created.id).toBeGreaterThan(0)
 })
 
@@ -312,12 +320,53 @@ test("context.sessionID is the sole owner source — the OPENCODE_SESSION_ID env
     // context wins over any env value
     const created = JSON.parse((await executeAdd({ todo: "env ignored" }, { sessionID: "ses_ctxowner" })).content)
     expect(created.session_id).toBe("ses_ctxowner")
-    expect(created.ticket.rollout_id).toBe("ses_ctxowner")
+    expect(created.ticket.session_id).toBe("ses_ctxowner")
     const sid = JSON.parse((await executeSession({}, { sessionID: "ses_ctxowner" })).content)
     expect(sid.session_id).toBe("ses_ctxowner")
   } finally {
     delete process.env.OPENCODE_SESSION_ID
   }
+})
+
+test("migration: the type column + index exist (idempotent), default 'unknown', explicit set, invalid rejects", () => {
+  const store = new TicketStore(ticketDbPath())
+  const db = (store as any).db
+  const cols = (db.query("PRAGMA table_info(ticket)").all() as any[]).map((r: any) => r.name)
+  expect(cols).toContain("type")
+  const idx = db.query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='ticket' AND name='idx_ticket_type'").get()
+  expect(idx).toBeTruthy()
+  const a = store.add({ todo: "type-default", rollout_id: "ses_type" })
+  expect(a.type).toBe("unknown")
+  const b = store.add({ todo: "type-milestone", rollout_id: "ses_type", type: "milestone" })
+  expect(b.type).toBe("milestone")
+  expect(() => store.add({ todo: "x", rollout_id: "ses_type", type: "bogus" })).toThrow(/type must be one of/)
+  // idempotent: a second constructor on the same DB is a no-op
+  const store2 = new TicketStore(ticketDbPath())
+  store2.close()
+  store.close()
+})
+
+test("ticket_add optional type: default unknown, explicit stored, bad type → E_ADD_BAD_TYPE", async () => {
+  const created = JSON.parse((await executeAdd({ todo: "typed", type: "milestone" }, { sessionID: "ses_type2" })).content)
+  expect(created.ticket.type).toBe("milestone")
+  const plain = JSON.parse((await executeAdd({ todo: "untyped" }, { sessionID: "ses_type2" })).content)
+  expect(plain.ticket.type).toBe("unknown")
+  const e = envelope((await executeAdd({ todo: "t", type: "bogus" }, { sessionID: "ses_type2" })).content)
+  expect(e.code).toBe("E_ADD_BAD_TYPE")
+})
+
+test("ticket_list filters by type and types (multi); combines with status", async () => {
+  const typed = async (todo: string, type: string) =>
+    JSON.parse((await executeAdd({ todo, type }, { sessionID: "ses_types" })).content)
+  await typed("t-milestone", "milestone")
+  await typed("t-task", "task")
+  await typed("t-bug", "bug")
+  const ms = JSON.parse((await executeList({ session_id: "ses_types", type: "milestone" }, {})).content)
+  expect(ms.map((r: any) => r.todo)).toEqual(["t-milestone"])
+  const multi = JSON.parse((await executeList({ session_id: "ses_types", types: ["task", "bug"] }, {})).content)
+  expect(new Set(multi.map((r: any) => r.todo))).toEqual(new Set(["t-task", "t-bug"]))
+  const plusStatus = JSON.parse((await executeList({ session_id: "ses_types", types: ["task", "bug"], status: "pending" }, {})).content)
+  expect(plusStatus.length).toBe(2)
 })
 
 test("ticket_session_id returns the current session id from context; without context it fails E_SESSION_NO_ID", async () => {
