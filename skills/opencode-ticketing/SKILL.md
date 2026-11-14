@@ -47,6 +47,25 @@ is the only field that ever changes.** The todo list is ephemeral ordering.
      onto the stack, works it next. Iterate until green.
 4. No CI monitoring until all tickets are done. AppVeyor orphans ignored.
 
+### One ticket per subagent
+
+A delegatee carries exactly ONE ticket — never multiple. Grouping several
+tickets into one subagent couples their gates: one red verdict stalls the
+batch, one agent's edits trample another lane's files, and the orchestrator
+cannot commit per ticket on green (the cycle's atomic step).
+
+Organize the work so each ticket is a DELIVERABLE AND TESTABLE UNIT:
+
+- One ticket per subagent; the delegatee's `ticket_get` names that ticket
+  alone.
+- Tickets that touch the same files are SEQUENCED: the next delegation
+  launches only after the previous one returned AND landed (gated +
+  committed).
+- Parallelism is per-lane (different apps/directories as parallel
+  single-ticket delegates), never per-batch.
+- If two tickets cannot be separated, they are one ticket — merge the body —
+  or split until each is deliverable and testable alone.
+
 **Boilerplate reduction.** Every subagent prompt should NOT re-state the
 standing rules (no commit/push, no rm/reset/stash, tee clobber files,
 bare-env macOS proof, etc.). Instead, the subagent's first actions are to

@@ -39,12 +39,12 @@ Ticket 的正文（`md_content`）是**规格,只在创建时写一次**。它�
 ## 工具面
 
 ```
-ticket_add todo="…" [md_content=spec]                       在 YOUR session id 下创建不可变 ticket
+ticket_add todo="…" [type=…] [md_content=spec]             在 YOUR session id 下创建不可变 ticket（type: unknown|task|bug|feature|chore|milestone，默认 unknown）
 ticket_session_id                                             YOUR 当前 session id
 ticket_comment id=N content="…"                              追加一条简短便签（最多 1000）
 ticket_status id=N session_id=<所有者 session id> status=…   唯一的变更
 ticket_get id=N                                               读 ticket + 评论
-ticket_list session_id=<session id> [status=]                一个 session 的 tickets（all=true:所有 session 的）
+ticket_list session_id=<session id> [status=] [type=|types=] 一个 session 的 tickets（all=true:所有 session 的）
 ticket_rules / ticket_help                                   delegatee 横幅 / 完整契约
 ```
 

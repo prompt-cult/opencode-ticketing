@@ -46,12 +46,12 @@ history.
 ## The tool surface
 
 ```
-ticket_add todo="…" [md_content=spec]                      create the immutable ticket under YOUR session id
+ticket_add todo="…" [type=…] [md_content=spec]            create the immutable ticket under YOUR session id (type: unknown|task|bug|feature|chore|milestone, default unknown)
 ticket_session_id                                            YOUR current session id
 ticket_comment id=N content="…"                             append one SHORT note (1000 max)
 ticket_status id=N session_id=<OWNER session id> status=…   the only mutation
 ticket_get id=N                                              read the ticket + comments
-ticket_list session_id=<session id> [status=]               one session's tickets (all=true: every session's)
+ticket_list session_id=<session id> [status=] [type=|types=] one session's tickets (all=true: every session's)
 ticket_rules / ticket_help                                  the delegatee banner / the whole contract
 ```
 
