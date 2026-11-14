@@ -317,6 +317,17 @@ test("ticket_add derives the owner from $OPENCODE_SESSION_ID — no owner param"
   expect(created.id).toBeGreaterThan(0)
 })
 
+test("headless fallback: without $OPENCODE_SESSION_ID, the harness-reported context.sessionID is the owner (opencode run)", async () => {
+  const created = await withoutSessionId(async () => {
+    const res = await executeAdd({ todo: "headless fallback" }, { sessionID: "ses_headless" })
+    return JSON.parse(res.content)
+  })
+  expect(created.session_id).toBe("ses_headless")
+  expect(created.ticket.rollout_id).toBe("ses_headless")
+  const sid = JSON.parse((await withoutSessionId(() => executeSession({}, { sessionID: "ses_headless" }))).content)
+  expect(sid.session_id).toBe("ses_headless")
+})
+
 test("ticket_session_id returns the current session id; without $OPENCODE_SESSION_ID it fails E_SESSION_NO_ID", async () => {
   const prev = process.env.OPENCODE_SESSION_ID
   process.env.OPENCODE_SESSION_ID = "ses_sessionprobe"

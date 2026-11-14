@@ -679,12 +679,15 @@ Subagent (delegee) rules — obey all of them:
 // params at the harness layer when the harness validates; these envelopes
 // cover every other path — and keep the contract greppable.
 
-// currentSessionId is the doctrine source of the caller's session id: the
-// harness sets OPENCODE_SESSION_ID for every agent process. ticket_add uses
-// it, so there is no owner parameter to spell wrongly; ticket_session_id
-// surfaces it for the agent.
-function currentSessionId(): string | undefined {
-  return process.env.OPENCODE_SESSION_ID || undefined
+// currentSessionId is the doctrine source of the caller's session id. The
+// canonical source is the harness environment variable OPENCODE_SESSION_ID
+// (set for interactive agent processes). Headless `opencode run` sessions
+// do not get the variable, so the harness-provided context.sessionID (the
+// same id) is the fallback — verified live on opencode v2.2.5 (issue #26
+// acceptance). ticket_add uses it, so there is no owner parameter to spell
+// wrongly; ticket_session_id surfaces it for the agent.
+function currentSessionId(context?: any): string | undefined {
+  return process.env.OPENCODE_SESSION_ID || context?.sessionID || undefined
 }
 
 export async function executeAdd(args: any, context: any): Promise<{ content: string }> {
@@ -697,8 +700,8 @@ export async function executeAdd(args: any, context: any): Promise<{ content: st
   if (jtd.length) return jtdFail("ADD", jtd, corrected)
   // JTD passes; empty strings are still missing semantically.
   if (!args.todo) return fail("E_ADD_MISSING_TODO", "ticket_add requires 'todo' (the one-line summary)", corrected)
-  const sessionId = currentSessionId()
-  if (!sessionId) return fail("E_ADD_NO_SESSION_ID", "no session id found — $OPENCODE_SESSION_ID is unset in this harness; ticket_session_id reports it", corrected)
+  const sessionId = currentSessionId(context)
+  if (!sessionId) return fail("E_ADD_NO_SESSION_ID", "no session id found — $OPENCODE_SESSION_ID is unset and the harness reported no session id; ticket_session_id reports it", corrected)
   try {
     const row = s.add({ todo: args.todo, rollout_id: sessionId, md_content: args.md_content ?? null })
     return ok({ session_id: row.rollout_id, id: row.id, ticket: row })
@@ -707,11 +710,11 @@ export async function executeAdd(args: any, context: any): Promise<{ content: st
   }
 }
 
-export async function executeSession(args: any = {}): Promise<{ content: string }> {
+export async function executeSession(args: any = {}, context?: any): Promise<{ content: string }> {
   const jtd = jtdValidateNone(args)
   if (jtd.length) return jtdFail("SESSION", jtd, {})
-  const sessionId = currentSessionId()
-  if (!sessionId) return fail("E_SESSION_NO_ID", "no session id found — $OPENCODE_SESSION_ID is unset in this harness", {})
+  const sessionId = currentSessionId(context)
+  if (!sessionId) return fail("E_SESSION_NO_ID", "no session id found — $OPENCODE_SESSION_ID is unset and the harness reported no session id", {})
   return ok({ session_id: sessionId })
 }
 
@@ -828,7 +831,7 @@ export default {
   setup: async (ctx) => {
     await ctx.tool.transform((tools) => {
       tools.add({ name: "ticket_add", options: { codemode: false }, description: ADD_DESC, input: ADD_INPUT, execute: (a: any, c: any) => executeAdd(a, c) })
-      tools.add({ name: "ticket_session_id", options: { codemode: false }, description: SESSION_DESC, input: SESSION_INPUT, execute: () => executeSession() })
+      tools.add({ name: "ticket_session_id", options: { codemode: false }, description: SESSION_DESC, input: SESSION_INPUT, execute: (a: any, c: any) => executeSession(a, c) })
       tools.add({ name: "ticket_get", options: { codemode: false }, description: GET_DESC, input: GET_INPUT, execute: (a: any, c: any) => executeGet(a, c) })
       tools.add({ name: "ticket_list", options: { codemode: false }, description: LIST_DESC, input: LIST_INPUT, execute: (a: any, c: any) => executeList(a, c) })
       tools.add({ name: "ticket_comment", options: { codemode: false }, description: COMMENT_DESC, input: COMMENT_INPUT, execute: (a: any, c: any) => executeComment(a, c) })
