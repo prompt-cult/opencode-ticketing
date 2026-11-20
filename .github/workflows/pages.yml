@@ -12,6 +12,22 @@ name: pages
 on:
   push:
     branches: [main]
+    # A push that cannot change anything under `_book` needs neither a build nor
+    # a deploy. Only these paths are filtered, because markdown IS the book's
+    # source and the generic `docs/**` + `**/*.md` pair would silently stop the
+    # site from ever publishing again (`docs/src/*.md` is what mdBook compiles):
+    #   - `*.md` at the repo root: README.md / README.zh-CN.md, neither of which
+    #     is in `docs/src/` (SUMMARY.md lists index.md and zh-cn.md only);
+    #   - `skills/**`, `v2.2.1/**`: the shipped skill and plugin, copied nowhere
+    #     into the book;
+    #   - `.tmp/**`: scratch space.
+    # `pull_request` stays unfiltered so every PR still builds and link-checks
+    # the book, and `workflow_dispatch` still always runs.
+    paths-ignore:
+      - '*.md'
+      - 'skills/**'
+      - 'v2.2.1/**'
+      - '.tmp/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -26,6 +42,10 @@ concurrency:
 
 jobs:
   build:
+    # `cargo install mdbook --locked` compiles the renderer from source, so this
+    # job is minutes not seconds: a hung build must not bill the 360-minute
+    # default.
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,6 +97,7 @@ jobs:
   deploy:
     needs: build
     if: github.event_name != 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     permissions:
       pages: write
