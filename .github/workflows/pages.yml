@@ -35,10 +35,25 @@ on:
 permissions:
   contents: read
 
-# One deployment at a time; the last push to main is the one that ships.
+# Runs on the same ref queue behind each other and a superseded one is cancelled
+# instead of billing to completion. The group is scoped per ref, so a pull_request
+# build no longer sits in the same queue as the deployment run on the default
+# branch (that shared queue was the reason a docs PR waited for a full deploy).
+#
+# SEMANTIC CHANGE: this block used to be `group: pages` + `cancel-in-progress:
+# false`, which guaranteed a run was never aborted and so "the last push to main
+# is the one that ships". Now a newer run on the same ref cancels the older one.
+# The window that matters is between `upload-pages-artifact` and the end of
+# `deploy-pages` (~15 s); an abort there leaves `github-pages` on the previously
+# deployed artifact and the next push redeploys. The build phase, which is the
+# whole cost here (mdBook is compiled from source), is never worth finishing for
+# a superseded commit, so cancelling it is the point.
+# To restore strict serialisation, set `cancel-in-progress: false` here (or
+# `cancel-in-progress: ${{ github.event_name == 'pull_request' }}` to keep the
+# build saving while never aborting a deployment).
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
