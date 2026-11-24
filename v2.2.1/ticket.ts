@@ -344,7 +344,7 @@ export function parseEnvelope(content: string): { code: string; message: string;
 // default, so the legal set IS the schema: anything not declared here is
 // a validation error before the handler runs. The validators below are
 // GENERATED code — jtd-codegen from
-// prompt-cult/json-type-definition-RFC-8927 (release nightly-20261103,
+// prompt-cult/json-type-definition-RFC-8927 (release 0.5.0,
 // MIT), AOT output, no schema interpretation at runtime — hand-inlined
 // so the entry stays self-contained (2.2.1 stages one file). Regenerate
 // with `jtd-codegen --target js <tool>.json`, one schema per tool.
